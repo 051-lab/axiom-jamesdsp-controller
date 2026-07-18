@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <math.h>
 #include <float.h>
+#include <stdint.h>
 #include "../jdsp_header.h"
 void Convolver1DEnable(JamesDSPLib *jdsp)
 {
@@ -58,20 +59,34 @@ void Convolver1DProcessTwoStageFFTConvolver2x4x2(JamesDSPLib *jdsp, size_t n)
 }
 int Convolver1DLoadImpulseResponse(JamesDSPLib *jdsp, float *tempImpulseFloat, unsigned int impChannels, size_t impulseLengthActual, char updateOld)
 {
+	if (!jdsp || !tempImpulseFloat || (impChannels != 1 && impChannels != 2 && impChannels != 4) ||
+		impulseLengthActual < 1 || impulseLengthActual > SIZE_MAX / impChannels / sizeof(float))
+		return -2;
+	for (size_t i = 0; i < impChannels * impulseLengthActual; i++)
+		if (!isfinite(tempImpulseFloat[i]))
+			return -2;
+
+	float *storedImpulse = 0;
+	if (updateOld)
+	{
+		storedImpulse = (float *)malloc(impChannels * impulseLengthActual * sizeof(float));
+		if (!storedImpulse)
+			return -2;
+		memcpy(storedImpulse, tempImpulseFloat, impChannels * impulseLengthActual * sizeof(float));
+	}
+
 	jdsp_lock(jdsp);
 	Convolver1DDestructor(jdsp);
 	if (updateOld)
 	{
 		if (jdsp->impulseResponseStorage.impulseResponse)
 			free(jdsp->impulseResponseStorage.impulseResponse);
-		jdsp->impulseResponseStorage.impulseResponse = (float *)malloc(impChannels * impulseLengthActual * sizeof(float));
-		memcpy(jdsp->impulseResponseStorage.impulseResponse, tempImpulseFloat, impChannels * impulseLengthActual * sizeof(float));
+		jdsp->impulseResponseStorage.impulseResponse = storedImpulse;
 		jdsp->impulseResponseStorage.impChannels = impChannels;
 		jdsp->impulseResponseStorage.impulseLengthActual = impulseLengthActual;
 	}
 	Convolver1DConstructor(jdsp);
-	float **finalImpulse = (float**)malloc(impChannels * sizeof(float*));
-	memset(finalImpulse, 0, impChannels * sizeof(float*));
+	float **finalImpulse = (float**)calloc(impChannels, sizeof(float*));
 	int ret = 1;
 	if (!finalImpulse)
 	{
@@ -106,6 +121,7 @@ int Convolver1DLoadImpulseResponse(JamesDSPLib *jdsp, float *tempImpulseFloat, u
 			ret = FFTConvolver2x2LoadImpulseResponse(jdsp->conv.conv1d2x2_S_S, (unsigned int)jdsp->blockSize, finalImpulse[0], finalImpulse[0], impulseLengthActual);
 			if (!ret)
 			{
+				FFTConvolver2x2Free(jdsp->conv.conv1d2x2_S_S);
 				free(jdsp->conv.conv1d2x2_S_S);
 				jdsp->conv.conv1d2x2_S_S = 0;
 				goto bufDeleteAndUnlock;
@@ -124,6 +140,7 @@ int Convolver1DLoadImpulseResponse(JamesDSPLib *jdsp, float *tempImpulseFloat, u
 			ret = FFTConvolver2x2LoadImpulseResponse(jdsp->conv.conv1d2x2_S_S, (unsigned int)jdsp->blockSize, finalImpulse[0], finalImpulse[1], impulseLengthActual);
 			if (!ret)
 			{
+				FFTConvolver2x2Free(jdsp->conv.conv1d2x2_S_S);
 				free(jdsp->conv.conv1d2x2_S_S);
 				jdsp->conv.conv1d2x2_S_S = 0;
 				goto bufDeleteAndUnlock;
@@ -142,6 +159,7 @@ int Convolver1DLoadImpulseResponse(JamesDSPLib *jdsp, float *tempImpulseFloat, u
 			ret = FFTConvolver2x4x2LoadImpulseResponse(jdsp->conv.conv1d2x4x2_S_S, (unsigned int)jdsp->blockSize, finalImpulse[0], finalImpulse[1], finalImpulse[2], finalImpulse[3], impulseLengthActual);
 			if (!ret)
 			{
+				FFTConvolver2x4x2Free(jdsp->conv.conv1d2x4x2_S_S);
 				free(jdsp->conv.conv1d2x4x2_S_S);
 				jdsp->conv.conv1d2x4x2_S_S = 0;
 				goto bufDeleteAndUnlock;
@@ -165,6 +183,7 @@ int Convolver1DLoadImpulseResponse(JamesDSPLib *jdsp, float *tempImpulseFloat, u
 			ret = TwoStageFFTConvolver2x2LoadImpulseResponse(jdsp->conv.conv1d2x2_T_S, (unsigned int)jdsp->blockSize, seg2Len, finalImpulse[0], finalImpulse[0], impulseLengthActual);
 			if (!ret)
 			{
+				TwoStageFFTConvolver2x2Free(jdsp->conv.conv1d2x2_T_S);
 				free(jdsp->conv.conv1d2x2_T_S);
 				jdsp->conv.conv1d2x2_T_S = 0;
 				goto bufDeleteAndUnlock;
@@ -183,6 +202,7 @@ int Convolver1DLoadImpulseResponse(JamesDSPLib *jdsp, float *tempImpulseFloat, u
 			ret = TwoStageFFTConvolver2x2LoadImpulseResponse(jdsp->conv.conv1d2x2_T_S, (unsigned int)jdsp->blockSize, seg2Len, finalImpulse[0], finalImpulse[1], impulseLengthActual);
 			if (!ret)
 			{
+				TwoStageFFTConvolver2x2Free(jdsp->conv.conv1d2x2_T_S);
 				free(jdsp->conv.conv1d2x2_T_S);
 				jdsp->conv.conv1d2x2_T_S = 0;
 				goto bufDeleteAndUnlock;
@@ -201,6 +221,7 @@ int Convolver1DLoadImpulseResponse(JamesDSPLib *jdsp, float *tempImpulseFloat, u
 			ret = TwoStageFFTConvolver2x4x2LoadImpulseResponse(jdsp->conv.conv1d2x4x2_T_S, (unsigned int)jdsp->blockSize, seg2Len, finalImpulse[0], finalImpulse[1], finalImpulse[2], finalImpulse[3], impulseLengthActual);
 			if (!ret)
 			{
+				TwoStageFFTConvolver2x4x2Free(jdsp->conv.conv1d2x4x2_T_S);
 				free(jdsp->conv.conv1d2x4x2_T_S);
 				jdsp->conv.conv1d2x4x2_T_S = 0;
 				goto bufDeleteAndUnlock;
@@ -209,11 +230,12 @@ int Convolver1DLoadImpulseResponse(JamesDSPLib *jdsp, float *tempImpulseFloat, u
 		}
 	}
 bufDeleteAndUnlock:
-	for (unsigned int i = 0; i < impChannels; i++)
-		if (finalImpulse[i])
-			free(finalImpulse[i]);
 	if (finalImpulse)
+	{
+		for (unsigned int i = 0; i < impChannels; i++)
+			free(finalImpulse[i]);
 		free(finalImpulse);
+	}
 	jdsp_unlock(jdsp);
 	if (!ret)
 		return -2;

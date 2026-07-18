@@ -8,4 +8,7 @@
     <AssemblyName>AxiomJamesDSPController</AssemblyName>
     <ApplicationIcon>..\Assets\axiom-controller.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AxiomJamesDSPController.Core\AxiomJamesDSPController.Core.csproj" />
+  </ItemGroup>
 </Project>

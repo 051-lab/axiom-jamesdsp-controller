@@ -565,7 +565,7 @@ void getAsymmetricWindow(float *analysisWnd, float *synthesisWnd, int32_t k, int
 	for (i = k - (m << 1); i < k; ++i)
 		synthesisWnd[i - (k - (m << 1))] = (float)(0.5 * (1.0 - cos(2.0 * M_PIDouble * (double)(i - (k - (m << 1))) / (double)n))) / analysisWnd[i];
 }
-void getwnd(float *wnd, unsigned int m, unsigned int n, char *mode)
+void getwnd(float *wnd, unsigned int m, unsigned int n, const char *mode)
 {
 	unsigned int i;
 	double x;
@@ -607,7 +607,7 @@ void getwnd(float *wnd, unsigned int m, unsigned int n, char *mode)
 		}
 	}
 }
-void genWnd(float *wnd, unsigned int N, char *type)
+void genWnd(float *wnd, unsigned int N, const char *type)
 {
 	unsigned int plus1 = N + 1;
 	unsigned int half;

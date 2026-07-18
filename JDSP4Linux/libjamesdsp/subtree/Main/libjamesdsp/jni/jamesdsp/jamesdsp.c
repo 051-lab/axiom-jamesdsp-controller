@@ -8,6 +8,12 @@
 #endif
 #include <string.h>
 #include <math.h>
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
+#endif
 #include "essential.h"
 // Effect section
 #include "jdsp/jdsp_header.h"
@@ -553,7 +559,7 @@ int32_t EffectDSPMainCommand(EffectDSPMain *dspmain, uint32_t cmdCode, uint32_t 
 					LOGI("%s", dspmain->stringEq);
 #endif
 					// Initialize EEL
-					int errorCode = LiveProgStringParser(&dspmain->jdsp, dspmain->stringEq);
+					int errorCode = LiveProgStringParser(&dspmain->jdsp, dspmain->stringEq, 0, 0);
 					free(dspmain->stringEq);
 					dspmain->stringEq = 0;
 #ifdef DEBUG

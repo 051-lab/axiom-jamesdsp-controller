@@ -30,11 +30,20 @@ extern void fhtsinHalfTblFloat(float *dst, unsigned int n);
 extern void LLdiscreteHartleyFloat(float *A, const int nPoints, const float *sinTab);
 extern double randXorshift(uint64_t s[2]);
 // Misc end
+#define JLIMITER_OVERSAMPLE_FACTOR (4)
+#define JLIMITER_MAX_LOOKAHEAD_SAMPLES (64)
 typedef struct
 {
 	float threshold;
 	float relCoef;
+	float releaseMs;
 	float envOverThreshold;
+	int enabled;
+	samplerateTool truePeakSampler[2];
+	float delay[2][JLIMITER_MAX_LOOKAHEAD_SAMPLES];
+	unsigned int delayIndex;
+	unsigned int lookaheadSamples;
+	unsigned int holdSamples;
 } JLimiter;
 #define FFTSIZE_DRS (8192)
 #define ANALYSIS_OVERLAP_DRS_MAX (8)
@@ -140,7 +149,9 @@ typedef struct
 	int needOversample;
 	samplerateTool smp[2];
 	SixBandsCrossover subband[2];
-	float pregain, postgain;
+	float pregain, postgain, harmonicGain;
+	float dcBlockCoefficient;
+	float dcBlockInput[2], dcBlockOutput[2];
 } VacuumTube;
 typedef struct
 {
@@ -394,8 +405,8 @@ typedef struct
 typedef struct
 {
 	NSEEL_VMCTX vm;
-	NSEEL_CODEHANDLE codehandleInit, codehandleProcess;
-	float *vmFs, *input1, *input2;
+	NSEEL_CODEHANDLE codehandleInit, codehandleSlider, codehandleBlock, codehandleProcess;
+	float *vmFs, *samplesBlock, *input1, *input2;
 	int compileSucessfully;
     int active;
 } LiveProg;
@@ -577,6 +588,7 @@ typedef struct dspsys
 extern void JamesDSPGlobalMemoryAllocation();
 extern void JamesDSPGlobalMemoryDeallocation();
 extern void JamesDSPReallocateBlock(JamesDSPLib *jdsp, size_t blockSizeMax);
+extern void JamesDSPSetBlockSize(JamesDSPLib *jdsp, size_t blockSize);
 extern void JamesDSP_Load_benchmark(double *_c0, double *_c1);
 extern void JamesDSP_Save_benchmark(double *_c0, double *_c1);
 extern void JamesDSP_Start_benchmark();
@@ -591,6 +603,9 @@ extern int selectConvPartitions(JamesDSPLib *jdsp, unsigned int impulseLengthAct
 // Limiter
 extern void JLimiterSetCoefficients(JamesDSPLib *jdsp, double thresholddB, double msRelease);
 extern void JLimiterInit(JamesDSPLib *jdsp);
+extern void JLimiterRefreshSampleRate(JamesDSPLib *jdsp);
+extern void JLimiterSetEnabled(JamesDSPLib *jdsp, int enabled);
+extern void JLimiterProcess(JamesDSPLib *jdsp, size_t n);
 // Compressor
 extern void CompressorConstructor(JamesDSPLib *jdsp);
 extern void CompressorDestructor(JamesDSPLib *jdsp);
@@ -621,17 +636,19 @@ extern void StereoEnhancementProcess(JamesDSPLib *jdsp, size_t n);
 // Vacuum tube
 extern void VacuumTubeEnable(JamesDSPLib *jdsp);
 extern void VacuumTubeDisable(JamesDSPLib *jdsp);
+extern void VTInit(VacuumTube *tb, double fs);
 extern void VacuumTubeSetGain(JamesDSPLib *jdsp, double dbGain);
+extern void VacuumTubeSetHarmonicGain(JamesDSPLib *jdsp, double amount);
 extern void VacuumTubeProcess(JamesDSPLib *jdsp, size_t n);
 // Live programmable effect
 extern const char* checkErrorCode(int errCode);
 extern void LiveProgConstructor(JamesDSPLib *jdsp);
 extern void LiveProgDestructor(JamesDSPLib *jdsp);
-extern int LiveProgStringParser(JamesDSPLib *jdsp, char *eelCode);
+extern int LiveProgStringParser(JamesDSPLib *jdsp, char *eelCode, char *errorBuffer, size_t errorBufferSize);
+extern int LiveProgSetVariable(JamesDSPLib *jdsp, const char *name, float value);
 extern void LiveProgEnable(JamesDSPLib *jdsp);
 extern void LiveProgDisable(JamesDSPLib *jdsp);
 extern void LiveProgProcess(JamesDSPLib *jdsp, size_t n);
-extern void LiveProgSetVar(JamesDSPLib *jdsp, const char* name, double value);
 // DDC
 extern void DDCConstructor(JamesDSPLib *jdsp);
 extern void DDCDestructor(JamesDSPLib *jdsp);

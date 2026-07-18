@@ -758,7 +758,7 @@ void DspHost::reloadLiveprog(DspConfig* config)
 
     QElapsedTimer timer;
     timer.start();
-    int ret = LiveProgStringParser(cast(this->_dsp), in.readAll().toLocal8Bit().data());
+    int ret = LiveProgStringParser(cast(this->_dsp), in.readAll().toLocal8Bit().data(), nullptr, 0);
 
     // Workaround due to library bug
     jdsp_unlock(cast(this->_dsp));
@@ -866,4 +866,3 @@ void receiveLiveprogStdOut(const char *buffer, void* userData)
 
     self->dispatch(DspHost::EelWriteOutputBuffer, QString(buffer));
 }
-

@@ -2,6 +2,7 @@
 #define __CPTHREAD_H__
 #ifdef _WIN32
 #include <stdbool.h>
+#include <time.h>
 #include <windows.h>
 typedef void pthread_attr_t;
 typedef CRITICAL_SECTION pthread_mutex_t;
@@ -15,7 +16,7 @@ typedef struct
 	SRWLOCK lock;
 	bool    exclusive;
 } pthread_rwlock_t;
-int pthread_create(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *arg);
+int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void *), void *arg);
 void pthread_exit(void *value_ptr);
 int pthread_join(pthread_t thread, void **value_ptr);
 int pthread_detach(pthread_t);

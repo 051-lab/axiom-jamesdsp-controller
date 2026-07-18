@@ -331,7 +331,12 @@ For the current controller wrap-up checklist, see
 `Start 1-Hour Validation Test.bat` as the shorter installed-build validation
 gate before scheduling the full eight-hour qualification run.
 
-Live Axiom slider changes are sent to JamesDSP through `LiveProgSetVar`.
+The Android-parity native and metadata foundation, pinned references, audit,
+and non-routing test commands are recorded in
+[`ANDROID-PARITY-FOUNDATION.md`](ANDROID-PARITY-FOUNDATION.md).
+
+Live Axiom slider changes are sent to JamesDSP through the validated
+`LiveProgSetVariable` API.
 Changing a slider no longer recompiles the EEL script. Script compilation is
 reserved for processor startup or selecting a different LiveProg file, which
 keeps normal control changes out of the real-time audio path.

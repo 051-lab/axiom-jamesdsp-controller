@@ -252,15 +252,6 @@ void MultimodalEqualizerFreeConv(void *conv)
 
 void* MultimodalEqualizerApply(JamesDSPLib *jdsp, int operatingMode, void* newConvVoid)
 {
-    // DIAGNOSTIC: Function entry
-    {
-        FILE *logf = fopen("C:/Users/gmaym/.gemini/antigravity/playground/blazing-comet/JamesDSP-Windows/jamesdsp_debug.log", "a");
-        if(logf) {
-            fprintf(logf, "[C-Core Apply] ENTRY: mode=%d newConv=%s\n", operatingMode, newConvVoid ? "valid" : "NULL");
-            fclose(logf);
-        }
-    }
-    
     // FIR Apply
     if (operatingMode == 0)
     {
@@ -269,26 +260,7 @@ void* MultimodalEqualizerApply(JamesDSPLib *jdsp, int operatingMode, void* newCo
         {
             FFTConvolver2x2 *active = &jdsp->mEQ.conv;
             
-            // DIAGNOSTIC: Log block sizes
-            {
-                FILE *logf = fopen("C:/Users/gmaym/.gemini/antigravity/playground/blazing-comet/JamesDSP-Windows/jamesdsp_debug.log", "a");
-                if(logf) {
-                    fprintf(logf, "[C-Core Apply] Active BS=%u SC=%u | Shadow BS=%u SC=%u\n", 
-                            active->_blockSize, active->_segCount, shadow->_blockSize, shadow->_segCount);
-                    fclose(logf);
-                }
-            }
-            
             if (active->_blockSize == shadow->_blockSize && active->_segCount == shadow->_segCount) {
-                // DIAGNOSTIC: Fast Swap success
-                {
-                    FILE *logf = fopen("C:/Users/gmaym/.gemini/antigravity/playground/blazing-comet/JamesDSP-Windows/jamesdsp_debug.log", "a");
-                    if(logf) {
-                        fprintf(logf, "[C-Core Apply] FAST SWAP - Swapping IR pointers\n");
-                        fclose(logf);
-                    }
-                }
-                
                 // Swap IR pointers (LL)
                 float **tmp;
                 tmp = active->_segmentsLLIRRe; active->_segmentsLLIRRe = shadow->_segmentsLLIRRe; shadow->_segmentsLLIRRe = tmp;
@@ -348,16 +320,6 @@ void* MultimodalEqualizerApply(JamesDSPLib *jdsp, int operatingMode, void* newCo
                 // Shadow takes the OLD IRs and can be freed safely.
             } else {
                 // Dimensions changed (Mismatch).
-                {
-                    FILE *logf = fopen("C:/Users/gmaym/.gemini/antigravity/playground/blazing-comet/JamesDSP-Windows/build-final/jdsp_apply_log.txt", "a");
-                    if(logf) {
-                        fprintf(logf, "[JamesDSP] CRITICAL: Fast Swap FAILED! Full Reset Triggered.\n");
-                        fprintf(logf, "[JamesDSP] Active BS: %u, Shadow BS: %u\n", active->_blockSize, shadow->_blockSize);
-                        fprintf(logf, "[JamesDSP] Active SC: %u, Shadow SC: %u\n", active->_segCount, shadow->_segCount);
-                        fclose(logf);
-                    }
-                }
-                
                 // Must perform full state reset.
                 FFTConvolver2x2 tempStruct = *active;
                 *active = *shadow;

@@ -6,16 +6,116 @@
 #include "eel2/numericSys/codelet.h"
 #include "eel2/ns-eel.h"
 #include "../jdsp_header.h"
+
+static void JLimiterResetState(JamesDSPLib *jdsp)
+{
+	JLimiter *limiter = &jdsp->limiter;
+	limiter->envOverThreshold = limiter->threshold;
+	limiter->delayIndex = 0;
+	limiter->holdSamples = 0;
+	limiter->lookaheadSamples = (unsigned int)lround((double)jdsp->fs / 1000.0);
+	if (limiter->lookaheadSamples < 1)
+		limiter->lookaheadSamples = 1;
+	if (limiter->lookaheadSamples > JLIMITER_MAX_LOOKAHEAD_SAMPLES)
+		limiter->lookaheadSamples = JLIMITER_MAX_LOOKAHEAD_SAMPLES;
+	memset(limiter->delay, 0, sizeof(limiter->delay));
+	oversample_makeSmp(&limiter->truePeakSampler[0], JLIMITER_OVERSAMPLE_FACTOR);
+	oversample_makeSmp(&limiter->truePeakSampler[1], JLIMITER_OVERSAMPLE_FACTOR);
+}
+
 void JLimiterSetCoefficients(JamesDSPLib *jdsp, double thresholddB, double msRelease)
 {
+	if (!isfinite(thresholddB) || !isfinite(msRelease))
+		return;
+	if (thresholddB < -60.0)
+		thresholddB = -60.0;
+	if (thresholddB > -0.1)
+		thresholddB = -0.1;
 	if (msRelease < 1.5)
 		msRelease = 1.5;
+	if (msRelease > 500.0)
+		msRelease = 500.0;
+	jdsp->limiter.releaseMs = (float)msRelease;
 	jdsp->limiter.relCoef = (float)exp(-1000.0 / (msRelease * round((double)jdsp->fs)));
 	jdsp->limiter.threshold = (float)pow(10.0, thresholddB / 20.0);
 }
 void JLimiterInit(JamesDSPLib *jdsp)
 {
-	jdsp->limiter.envOverThreshold = 0.0f;
+	jdsp->limiter.enabled = 1;
+	jdsp->limiter.threshold = 1.0f;
+	jdsp->limiter.releaseMs = 100.0f;
+	JLimiterSetCoefficients(jdsp, 0.0, jdsp->limiter.releaseMs);
+	JLimiterResetState(jdsp);
+}
+void JLimiterRefreshSampleRate(JamesDSPLib *jdsp)
+{
+	double thresholdDb = 20.0 * log10((double)jdsp->limiter.threshold);
+	JLimiterSetCoefficients(jdsp, thresholdDb, jdsp->limiter.releaseMs);
+	JLimiterResetState(jdsp);
+}
+void JLimiterSetEnabled(JamesDSPLib *jdsp, int enabled)
+{
+	enabled = enabled != 0;
+	if (jdsp->limiter.enabled == enabled)
+		return;
+	jdsp->limiter.enabled = enabled;
+	JLimiterResetState(jdsp);
+}
+void JLimiterProcess(JamesDSPLib *jdsp, size_t n)
+{
+	JLimiter *limiter = &jdsp->limiter;
+	if (!limiter->enabled)
+	{
+		for (size_t i = 0; i < n; i++)
+		{
+			jdsp->tmpBuffer[0][i] *= jdsp->postGain;
+			jdsp->tmpBuffer[1][i] *= jdsp->postGain;
+		}
+		return;
+	}
+
+	float upsampled[2][JLIMITER_OVERSAMPLE_FACTOR];
+	for (size_t i = 0; i < n; i++)
+	{
+		float xL = jdsp->tmpBuffer[0][i] * jdsp->postGain;
+		float xR = jdsp->tmpBuffer[1][i] * jdsp->postGain;
+		if (!isfinite(xL)) xL = 0.0f;
+		if (!isfinite(xR)) xR = 0.0f;
+
+		oversample_stepupSmp(&limiter->truePeakSampler[0], xL, upsampled[0]);
+		oversample_stepupSmp(&limiter->truePeakSampler[1], xR, upsampled[1]);
+		float peak = fmaxf(fabsf(xL), fabsf(xR));
+		for (int phase = 0; phase < JLIMITER_OVERSAMPLE_FACTOR; phase++)
+			peak = fmaxf(peak, fmaxf(fabsf(upsampled[0][phase]), fabsf(upsampled[1][phase])));
+		if (peak < limiter->threshold)
+			peak = limiter->threshold;
+
+		if (peak >= limiter->envOverThreshold)
+		{
+			limiter->envOverThreshold = peak;
+			limiter->holdSamples = limiter->lookaheadSamples;
+		}
+		else if (limiter->holdSamples > 0)
+		{
+			limiter->holdSamples--;
+		}
+		else
+		{
+			limiter->envOverThreshold = peak + limiter->relCoef *
+				(limiter->envOverThreshold - peak);
+		}
+
+		const unsigned int delayIndex = limiter->delayIndex;
+		float delayedL = limiter->delay[0][delayIndex];
+		float delayedR = limiter->delay[1][delayIndex];
+		limiter->delay[0][delayIndex] = xL;
+		limiter->delay[1][delayIndex] = xR;
+		limiter->delayIndex = (delayIndex + 1) % limiter->lookaheadSamples;
+
+		float gain = limiter->threshold / limiter->envOverThreshold;
+		jdsp->tmpBuffer[0][i] = delayedL * gain;
+		jdsp->tmpBuffer[1][i] = delayedR * gain;
+	}
 }
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -25,11 +125,11 @@ float map(float x, float in_min, float in_max, float out_min, float out_max)
 	return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 #include "../generalDSP/spectralInterpolatorFloat.h"
-static size_t choose(float *a, float *b, size_t src1, size_t src2)
+static size_t choose(const float *a, const float *b, size_t src1, size_t src2)
 {
 	return (*b >= *a) ? src2 : src1;
 }
-static size_t fast_upper_bound4(float *vec, size_t n, float *value)
+static size_t fast_upper_bound4(const float *vec, size_t n, const float *value)
 {
 	size_t size = n;
 	size_t low = 0;
@@ -66,7 +166,7 @@ static size_t fast_upper_bound4(float *vec, size_t n, float *value)
 	}
 	return low;
 }
-static inline float lerp1DNoExtrapo(float val, float *x, float *y, int n)
+static inline float lerp1DNoExtrapo(float val, const float *x, const float *y, int n)
 {
 	if (val <= x[0])
 		return y[0];
@@ -1651,17 +1751,7 @@ void CompressorSetGain(JamesDSPLib *jdsp, double *freq, double *gains, char cpy)
 	{
 		memcpy(cm->freq2 + 1, freq, NUMPTS_DRS * sizeof(double));
 		memcpy(cm->gains2 + 1, gains, NUMPTS_DRS * sizeof(double));
-        
-        // DEBUG: Log received gains
-        FILE *f = fopen("C:/Users/gmaym/.gemini/antigravity/playground/blazing-comet/JamesDSP-Windows/build-final/jdsp_drc_debug.log", "a");
-        if(f) {
-            fprintf(f, "[DRC] SetGain Called. Gains: ");
-            for(int i=0; i<NUMPTS_DRS; ++i) fprintf(f, "%.2f ", gains[i]);
-            fprintf(f, "\n");
-            fclose(f);
-        }
 	}
-
 	cm->freq2[0] = 0.0;
 	cm->gains2[0] = cm->gains2[1];
 	cm->freq2[NUMPTS_DRS + 1] = 24000.0;
@@ -1735,8 +1825,6 @@ void CompressorSetGain(JamesDSPLib *jdsp, double *freq, double *gains, char cpy)
 		for (int i = 0; i < DYN_BANDS_GAMMATONE; i++)
 			if (cm->headRoomdB < cm->DREmult[i] * 12.0f)
 				cm->headRoomdB = cm->DREmult[i] * 12.0f;
-
-
 	}
 }
 void CompressorProcess(JamesDSPLib *jdsp, size_t n)

@@ -1839,16 +1839,16 @@ internal sealed class MainForm : Form
                 sourceEelPath);
         }
         var source = File.ReadAllText(sourceEelPath);
-        var regex = new Regex(@"^(?<var>slider\d+):(?<def>-?\d+(?:\.\d+)?)<(?<min>-?\d+(?:\.\d+)?),(?<max>-?\d+(?:\.\d+)?),(?<step>-?\d+(?:\.\d+)?)>(?<name>.+)$", RegexOptions.Multiline);
-        foreach (Match match in regex.Matches(source))
+        foreach (var metadata in LiveProgMetadataParser.Parse(source).Parameters)
         {
+            if (metadata.Default is null) continue;
             var param = new AxiomParam(
-                match.Groups["var"].Value,
-                match.Groups["name"].Value.Trim(),
-                Decimal(match.Groups["def"].Value),
-                Decimal(match.Groups["min"].Value),
-                Decimal(match.Groups["max"].Value),
-                Decimal(match.Groups["step"].Value));
+                metadata.Key,
+                metadata.Description,
+                Convert.ToDecimal(metadata.Default.Value, CultureInfo.InvariantCulture),
+                Convert.ToDecimal(metadata.Minimum, CultureInfo.InvariantCulture),
+                Convert.ToDecimal(metadata.Maximum, CultureInfo.InvariantCulture),
+                Convert.ToDecimal(metadata.Step, CultureInfo.InvariantCulture));
             axiomParams.Add(param);
             axiomValues[param.Var] = param.Default;
         }

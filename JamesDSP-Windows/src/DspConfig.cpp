@@ -424,7 +424,12 @@ void DspController::applyLiveprog(const DspConfig& config) {
                 buffer << file.rdbuf();
                 std::string content = buffer.str();
                 
-                int result = LiveProgStringParser(m_dsp, const_cast<char*>(content.c_str()));
+                char errorBuffer[1024] = {0};
+                int result = LiveProgStringParser(
+                    m_dsp,
+                    const_cast<char*>(content.c_str()),
+                    errorBuffer,
+                    sizeof(errorBuffer));
                 if (result > 0) {
                     LiveProgEnable(m_dsp);
                     m_loadedLiveprogFile = config.liveprogFile;
@@ -433,8 +438,10 @@ void DspController::applyLiveprog(const DspConfig& config) {
                 } else {
                     std::cerr << "[LIVEPROG] Compilation error (" << result << "): " 
                               << checkErrorCode(result) << std::endl;
-                    LiveProgDisable(m_dsp);
-                    m_loadedLiveprogFile.clear();
+                    if (errorBuffer[0] != '\0') {
+                        std::cerr << "[LIVEPROG] Compiler detail: " << errorBuffer << std::endl;
+                    }
+                    std::cerr << "[LIVEPROG] Previous working script remains active." << std::endl;
                 }
             } else {
                 std::cerr << "[LIVEPROG] File not found: " << config.liveprogFile << std::endl;
@@ -442,7 +449,9 @@ void DspController::applyLiveprog(const DspConfig& config) {
         }
         if (m_loadedLiveprogFile == config.liveprogFile) {
             for (const auto& param : config.liveprogParams) {
-                LiveProgSetVar(m_dsp, param.first.c_str(), param.second);
+                if (!LiveProgSetVariable(m_dsp, param.first.c_str(), static_cast<float>(param.second))) {
+                    std::cerr << "[LIVEPROG] Rejected variable update: " << param.first << std::endl;
+                }
             }
         }
     } else {
@@ -530,7 +539,9 @@ void DspController::applyConfig(const DspConfig& config, bool forceRefresh) {
     } else if (config.liveprogEnabled &&
                config.liveprogParams != m_currentConfig.liveprogParams) {
         for (const auto& param : config.liveprogParams) {
-            LiveProgSetVar(m_dsp, param.first.c_str(), param.second);
+            if (!LiveProgSetVariable(m_dsp, param.first.c_str(), static_cast<float>(param.second))) {
+                std::cerr << "[LIVEPROG] Rejected variable update: " << param.first << std::endl;
+            }
         }
     }
     if (forceRefresh ||
