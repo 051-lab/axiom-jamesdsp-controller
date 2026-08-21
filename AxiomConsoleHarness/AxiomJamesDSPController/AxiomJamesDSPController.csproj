@@ -5,7 +5,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>AxiomJamesDSPController</AssemblyName>
+    <AssemblyName>JamesDSPController</AssemblyName>
     <ApplicationIcon>..\Assets\axiom-controller.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>

@@ -1,7 +1,9 @@
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -133,16 +135,17 @@ void testConvolverValidation(JamesDSPLib& dsp)
 int main()
 {
     JamesDSPGlobalMemoryAllocation();
-    JamesDSPLib dsp = {};
-    JamesDSPInit(&dsp, 8, 48000.0f);
-    JLimiterSetEnabled(&dsp, 0);
+    auto dsp = std::make_unique<JamesDSPLib>();
+    std::memset(dsp.get(), 0, sizeof(JamesDSPLib));
+    JamesDSPInit(dsp.get(), 8, 48000.0f);
+    JLimiterSetEnabled(dsp.get(), 0);
 
-    testLiveProgLifecycle(dsp);
-    testTransactionalReplacement(dsp);
-    testVariableBlockCapacity(dsp);
-    testConvolverValidation(dsp);
+    testLiveProgLifecycle(*dsp);
+    testTransactionalReplacement(*dsp);
+    testVariableBlockCapacity(*dsp);
+    testConvolverValidation(*dsp);
 
-    JamesDSPFree(&dsp);
+    JamesDSPFree(dsp.get());
     JamesDSPGlobalMemoryDeallocation();
 
     if (failures) {

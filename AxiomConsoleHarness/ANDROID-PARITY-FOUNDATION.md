@@ -1,5 +1,9 @@
 # Android Parity Foundation
 
+> Historical foundation notes retained for reference. Current Windows
+> LiveProg/Darwin behavior and release commands are documented in
+> [README.md](README.md).
+
 This pass starts from Windows baseline `b7aacf3`, Android behavior reference
 `051-lab/RootlessJamesDSP@0ee48f9`, and native-core reference
 `051-lab/JamesDSPManager@86ff781`.

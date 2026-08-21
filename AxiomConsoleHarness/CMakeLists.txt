@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
-project(AxiomJamesDSPConsole LANGUAGES C CXX)
+project(JamesDSPConsole LANGUAGES C CXX)
 
 if(NOT WIN32)
-    message(FATAL_ERROR "AxiomJamesDSPConsole requires a Windows target toolchain")
+    message(FATAL_ERROR "JamesDSPConsole requires a Windows target toolchain")
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
@@ -49,6 +49,7 @@ target_link_libraries(AxiomJamesDSPConsole PRIVATE
 if(MSVC)
     target_compile_options(AxiomJamesDSPConsole PRIVATE /EHsc /bigobj)
 endif()
+set_target_properties(AxiomJamesDSPConsole PROPERTIES OUTPUT_NAME JamesDSPConsole)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -60,4 +61,23 @@ if(BUILD_TESTING)
         target_compile_options(AxiomJamesDSPNativeTests PRIVATE /EHsc /bigobj)
     endif()
     add_test(NAME liveprog_native COMMAND AxiomJamesDSPNativeTests)
+
+    add_executable(JamesDSPDarwinNativeTests
+        "${CMAKE_CURRENT_LIST_DIR}/tests/darwin_native_tests.cpp"
+        "${WIN_APP}/src/DspConfig.cpp"
+    )
+    target_link_libraries(JamesDSPDarwinNativeTests PRIVATE AxiomJamesDSPCore winmm)
+    if(MSVC)
+        target_compile_options(JamesDSPDarwinNativeTests PRIVATE /EHsc /bigobj)
+    endif()
+    add_test(NAME darwin_native COMMAND JamesDSPDarwinNativeTests)
+
+    add_executable(JamesDSPDragonEngineTests
+        "${CMAKE_CURRENT_LIST_DIR}/tests/dragon_engine_test.cpp"
+    )
+    target_link_libraries(JamesDSPDragonEngineTests PRIVATE AxiomJamesDSPCore winmm)
+    if(MSVC)
+        target_compile_options(JamesDSPDragonEngineTests PRIVATE /EHsc /bigobj)
+    endif()
+    add_test(NAME dragon_engine_signal COMMAND JamesDSPDragonEngineTests)
 endif()

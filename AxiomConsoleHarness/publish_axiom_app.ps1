@@ -7,17 +7,24 @@ $ErrorActionPreference = "Stop"
 $harness = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repo = Split-Path -Parent $harness
 $project = Join-Path $harness "AxiomJamesDSPController\AxiomJamesDSPController.csproj"
-$console = Join-Path $repo "build-axiom-console\AxiomJamesDSPConsole.exe"
+$console = Join-Path $repo "build-axiom-console\JamesDSPConsole.exe"
 $acceptedEel = Join-Path $repo "JamesDSP-Windows\build-final\assets\Liveprog\axiom_binaural_dsp_v4.1.4.11.eel"
 
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $harness "dist"
 }
 
-$package = Join-Path $OutputRoot "AxiomJamesDSPController-win-x64"
+$package = Join-Path $OutputRoot "JamesDSPController-win-x64"
 $publish = Join-Path $OutputRoot ".publish"
+$artifacts = Join-Path $env:TEMP "jamesdsp-controller-publish-artifacts"
 
-& (Join-Path $harness "build_axiom_console.bat")
+Push-Location $env:TEMP
+try {
+    & (Join-Path $harness "build_axiom_console.bat")
+}
+finally {
+    Pop-Location
+}
 if ($LASTEXITCODE -ne 0) {
     throw "Native processor build failed with exit code $LASTEXITCODE."
 }
@@ -34,14 +41,15 @@ dotnet publish $project `
     -p:PublishSingleFile=false `
     -p:DebugType=None `
     -p:DebugSymbols=false `
+    --artifacts-path $artifacts `
     -o $publish
 if ($LASTEXITCODE -ne 0) {
     throw "Controller publish failed with exit code $LASTEXITCODE."
 }
 
 Copy-Item (Join-Path $publish "*") $package -Recurse -Force
-Copy-Item $console (Join-Path $package "AxiomJamesDSPConsole.exe") -Force
-Copy-Item (Join-Path $harness "package-default.ini") (Join-Path $package "axiom-liveprog-test.ini") -Force
+Copy-Item $console (Join-Path $package "JamesDSPConsole.exe") -Force
+Copy-Item (Join-Path $harness "package-default.ini") (Join-Path $package "jamesdsp-controller.ini") -Force
 Copy-Item (Join-Path $harness "PACKAGE-README.txt") (Join-Path $package "README.txt") -Force
 
 $assets = Join-Path $package "assets\Liveprog"
@@ -54,9 +62,9 @@ Copy-Item (Join-Path $harness "runtime\axiom-test-pulse-gate.eel") $runtime -For
 
 $launcher = @'
 @echo off
-start "" "%~dp0AxiomJamesDSPController.exe"
+start "" "%~dp0JamesDSPController.exe"
 '@
-Set-Content -Path (Join-Path $package "Launch Axiom.cmd") -Value $launcher -Encoding ASCII
+Set-Content -Path (Join-Path $package "Launch JamesDSP Controller.cmd") -Value $launcher -Encoding ASCII
 
 if ($Zip) {
     $zipPath = "$package.zip"

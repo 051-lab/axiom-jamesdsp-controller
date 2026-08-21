@@ -1,10 +1,10 @@
 <Project>
   <PropertyGroup>
-    <AxiomVersion>0.2.0</AxiomVersion>
-    <Version>$(AxiomVersion)</Version>
-    <AssemblyVersion>0.2.0.0</AssemblyVersion>
-    <FileVersion>0.2.0.0</FileVersion>
-    <Product>Axiom JamesDSP Controller</Product>
-    <Company>Axiom DSP</Company>
+    <JamesDSPControllerVersion>0.3.0</JamesDSPControllerVersion>
+    <Version>$(JamesDSPControllerVersion)</Version>
+    <AssemblyVersion>0.3.0.0</AssemblyVersion>
+    <FileVersion>0.3.0.0</FileVersion>
+    <Product>JamesDSP Controller</Product>
+    <Company>JamesDSP</Company>
   </PropertyGroup>
 </Project>

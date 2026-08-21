@@ -1,3 +1,6 @@
 @echo off
-cd /d "%~dp0..\build-axiom-console"
-AxiomJamesDSPConsole.exe --watch-config -c "%~dp0axiom-liveprog-test.ini"
+pushd "%~dp0..\build-axiom-console"
+JamesDSPConsole.exe --watch-config -c "%~dp0package-default.ini"
+set "RUN_EXIT=%errorlevel%"
+popd
+exit /b %RUN_EXIT%

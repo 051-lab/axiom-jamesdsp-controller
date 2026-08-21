@@ -1,5 +1,5 @@
 param(
-    [string]$ApplicationRoot = "$env:ProgramFiles\Axiom JamesDSP Controller",
+    [string]$ApplicationRoot = "",
     [int]$PowerObservationSeconds = 30,
     [int]$QuietHostObservationSeconds = 60,
     [switch]$RequireQuietHost,
@@ -8,7 +8,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 $harness = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$package = Join-Path $harness "dist\AxiomJamesDSPController-win-x64"
+if ([string]::IsNullOrWhiteSpace($ApplicationRoot)) {
+    $newRoot = Join-Path $env:ProgramFiles "JamesDSP Controller"
+    $legacyRoot = Join-Path $env:ProgramFiles "Axiom JamesDSP Controller"
+    $ApplicationRoot = if (Test-Path (Join-Path $newRoot "JamesDSPController.exe")) {
+        $newRoot
+    } elseif (Test-Path (Join-Path $legacyRoot "JamesDSPController.exe")) {
+        $legacyRoot
+    } else {
+        $newRoot
+    }
+}
+$package = Join-Path $harness "dist\JamesDSPController-win-x64"
 $checks = [System.Collections.Generic.List[object]]::new()
 
 function Add-Check([string]$Name, [bool]$Passed, [string]$Detail, [string]$Severity = "error") {
@@ -116,30 +127,42 @@ $pendingRebootDetail = if ($pendingReboots.Count -eq 0) {
 }
 Add-Check "no pending Windows reboot" ($pendingReboots.Count -eq 0) $pendingRebootDetail
 
-$installedConsole = Join-Path $ApplicationRoot "AxiomJamesDSPConsole.exe"
-$installedController = Join-Path $ApplicationRoot "AxiomJamesDSPController.dll"
-$packageConsole = Join-Path $package "AxiomJamesDSPConsole.exe"
-$packageController = Join-Path $package "AxiomJamesDSPController.dll"
-foreach ($path in @($installedConsole, $installedController, $packageConsole, $packageController)) {
+$installedConsole = Join-Path $ApplicationRoot "JamesDSPConsole.exe"
+$installedController = Join-Path $ApplicationRoot "JamesDSPController.dll"
+$installedControllerCore = Join-Path $ApplicationRoot "JamesDSPController.Core.dll"
+$packageConsole = Join-Path $package "JamesDSPConsole.exe"
+$packageController = Join-Path $package "JamesDSPController.dll"
+$packageControllerCore = Join-Path $package "JamesDSPController.Core.dll"
+$releaseFiles = @(
+    $installedConsole,
+    $installedController,
+    $installedControllerCore,
+    $packageConsole,
+    $packageController,
+    $packageControllerCore
+)
+foreach ($path in $releaseFiles) {
     Add-Check "file exists: $([IO.Path]::GetFileName($path)) [$path]" (Test-Path $path) $path
 }
-if (@($installedConsole, $installedController, $packageConsole, $packageController |
-        Where-Object { -not (Test-Path $_) }).Count -eq 0) {
+if (@($releaseFiles | Where-Object { -not (Test-Path $_) }).Count -eq 0) {
     $consoleMatches = (Get-FileHash $installedConsole -Algorithm SHA256).Hash -eq
         (Get-FileHash $packageConsole -Algorithm SHA256).Hash
     $controllerMatches = (Get-FileHash $installedController -Algorithm SHA256).Hash -eq
         (Get-FileHash $packageController -Algorithm SHA256).Hash
+    $controllerCoreMatches = (Get-FileHash $installedControllerCore -Algorithm SHA256).Hash -eq
+        (Get-FileHash $packageControllerCore -Algorithm SHA256).Hash
     Add-Check "installed native processor matches package" $consoleMatches "SHA-256 comparison"
     Add-Check "installed controller matches package" $controllerMatches "SHA-256 comparison"
+    Add-Check "installed controller core matches package" $controllerCoreMatches "SHA-256 comparison"
 }
 
-$activeAxiom = @(Get-Process AxiomJamesDSPController,AxiomJamesDSPConsole -ErrorAction SilentlyContinue)
+$activeAxiom = @(Get-Process JamesDSPController,JamesDSPConsole,AxiomJamesDSPController,AxiomJamesDSPConsole -ErrorAction SilentlyContinue)
 $activeAxiomDetail = if ($activeAxiom.Count -eq 0) {
     "none"
 } else {
     $activeAxiom.Name -join ", "
 }
-Add-Check "no competing Axiom processes are running" ($activeAxiom.Count -eq 0) $activeAxiomDetail
+Add-Check "no competing JamesDSP Controller processes are running" ($activeAxiom.Count -eq 0) $activeAxiomDetail
 
 $consoleForRoute = if (Test-Path $installedConsole) { $installedConsole } else { $packageConsole }
 if (Test-Path $consoleForRoute) {
@@ -163,7 +186,7 @@ $report = [ordered]@{
 }
 
 if ([string]::IsNullOrWhiteSpace($JsonPath)) {
-    $JsonPath = Join-Path $env:LOCALAPPDATA "Axiom\SoakTests\release-preflight.json"
+    $JsonPath = Join-Path $env:LOCALAPPDATA "JamesDSP\SoakTests\release-preflight.json"
 }
 New-Item (Split-Path -Parent $JsonPath) -ItemType Directory -Force | Out-Null
 $report | ConvertTo-Json -Depth 6 | Set-Content $JsonPath -Encoding UTF8

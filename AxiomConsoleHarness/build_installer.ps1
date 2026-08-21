@@ -17,13 +17,13 @@ if (-not $compiler) {
     throw "Inno Setup 6 compiler was not found. Install JRSoftware.InnoSetup through winget."
 }
 if (-not (Test-Path $versionProps)) {
-    throw "Central Axiom version metadata is missing: $versionProps"
+    throw "Central JamesDSP Controller version metadata is missing: $versionProps"
 }
 
 [xml]$versionDocument = Get-Content $versionProps -Raw
-$version = [string]$versionDocument.Project.PropertyGroup.AxiomVersion
+$version = [string]$versionDocument.Project.PropertyGroup.JamesDSPControllerVersion
 if ($version -notmatch "^\d+\.\d+\.\d+$") {
-    throw "AxiomVersion must use semantic major.minor.patch format."
+    throw "JamesDSPControllerVersion must use semantic major.minor.patch format."
 }
 
 if (-not $SkipPackage) {

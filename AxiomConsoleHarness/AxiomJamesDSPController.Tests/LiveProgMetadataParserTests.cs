@@ -22,6 +22,7 @@ public sealed class LiveProgMetadataParserTests
         Assert.Equal(new[] { "axiom", "clean", "test" }, metadata.Tags);
         Assert.Equal(new[] { "leading", "exponent", "mode" }, metadata.Parameters.Select(item => item.Key));
         Assert.Equal(0.5, metadata.Parameters[0].Default);
+        Assert.Equal(0.5, metadata.Parameters[0].InitialValue);
         Assert.Equal(0.05, metadata.Parameters[1].Step);
         Assert.Equal(new[] { "Off", "Normal", "Wide" }, metadata.Parameters[2].Options);
     }
@@ -59,6 +60,7 @@ public sealed class LiveProgMetadataParserTests
             nonfinite:1e999<0,1>Invalid
             reverse:0<1,0>Invalid range
             zeroStep:0<0,1,0>Invalid step
+            1invalid:0<0,1>Invalid identifier
             @sample
             spl0 = spl0;
             """);
@@ -80,5 +82,36 @@ public sealed class LiveProgMetadataParserTests
 
         Assert.Equal(0.5, metadata.Parameters[0].Default);
         Assert.Equal(2, metadata.Parameters[1].Default);
+    }
+
+    [Fact]
+    public void UsesLiteralScriptAssignmentWhenDeclarationHasNoDefault()
+    {
+        var metadata = LiveProgMetadataParser.Parse("""
+            gain:<-12,12,.5>Gain
+            // gain = 9;
+            @init
+            gain = 3.5;
+            @sample
+            spl0 *= gain;
+            """);
+
+        var parameter = Assert.Single(metadata.Parameters);
+        Assert.Null(parameter.Default);
+        Assert.Equal(3.5, parameter.InitialValue);
+    }
+
+    [Fact]
+    public void RejectsListMetadataThatCannotMapToItsOptions()
+    {
+        var metadata = LiveProgMetadataParser.Parse("""
+            wrongCount:0<0,2{Off, On}>Invalid
+            wrongDefault:3<0,2{Off, Normal, Wide}>Invalid
+            wrongStep:0<0,2,2{Off, Normal, Wide}>Invalid
+            @sample
+            spl0 = spl0;
+            """);
+
+        Assert.Empty(metadata.Parameters);
     }
 }

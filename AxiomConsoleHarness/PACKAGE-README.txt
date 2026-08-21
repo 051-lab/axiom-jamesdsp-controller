@@ -1,48 +1,30 @@
-Axiom JamesDSP Controller
+JamesDSP Controller
 
-Run "Axiom JamesDSP Controller.exe".
+Run "JamesDSPController.exe" or "Launch JamesDSP Controller.cmd".
 
 First run:
 1. Install VB-CABLE from https://vb-audio.com/Cable/ and reboot Windows.
 2. Open Routing and choose the physical device you will hear.
 3. Select "Use VB-CABLE -> Output".
-4. Set VB-CABLE as the Windows source/default when prompted.
-5. Start the processor and confirm audio reaches the physical output.
-6. Open Profiles and save a named listening profile.
+4. Start the processor and confirm audio reaches the physical output.
+5. In Files, select any compatible EEL2 script as the LiveProg source.
+6. Enable LiveProg; its declared parameters appear in the LiveProg tab.
+7. Save a named listening profile if desired.
 
-Routing:
-- Windows applications play to VB-CABLE.
-- Axiom captures VB-CABLE, processes audio through JamesDSP, and renders to the
-  selected physical output.
-- "Restore Previous Default" returns Windows to the output that was active
-  before Axiom took route ownership.
-- Setup & System can restore the previous output automatically when Axiom exits.
-- DAWs should use a Windows/WASAPI-compatible output routed to VB-CABLE for
-  this controller path. ASIO4ALL is a future native-ASIO engine track and is
-  not expected to appear as a normal Axiom source endpoint.
+LiveProg:
+- The selected EEL source is never modified.
+- Script parameter values are remembered independently for each EEL file.
+- @sample is required; @init, @slider, and @block are supported and optional.
+- "Load Bundled Axiom" remains available as an example/compatibility script.
 
-Profiles:
-- Profiles can be created, updated, loaded, duplicated, renamed, deleted,
-  imported, and exported.
-- The Qualification profile is protected and restores the fixed comparison
-  baseline.
+Darwin:
+- Select a Darwin .zip or .darwin filter package in the Darwin tab.
+- Choose a filter, optional harmonic amount, and automatic headroom.
+- An invalid replacement leaves the last working filter active.
 
-Diagnostics:
-- Persistent telemetry is stored in:
-  %LOCALAPPDATA%\Axiom\JamesDSPController\diagnostics\health-history.jsonl
-- Diagnostics can open or clear this history and export a diagnostic report.
-- Warnings identify new dropped frames, conversion failures, discontinuities,
-  starvation, render errors, and unusually long DSP calls.
+Mutable settings, profiles, runtime files, and diagnostics are stored under:
+%LOCALAPPDATA%\JamesDSP\Controller
 
-Lifecycle options under Setup & System:
-- Start with Windows
-- Start the processor automatically when the saved route is valid
-- Close or minimize to the notification area
-- Restore the previous Windows output on exit
-
-All mutable settings, profiles, runtime scripts, and diagnostics are stored
-under:
-%LOCALAPPDATA%\Axiom\JamesDSPController
-
-Uninstall preserves that Local AppData directory. VB-CABLE is an external
-Windows driver and is not redistributed with Axiom.
+Existing data under %LOCALAPPDATA%\Axiom\JamesDSPController is migrated on
+first use. Uninstall preserves Local AppData. VB-CABLE is an external Windows
+driver and is not redistributed with JamesDSP Controller.

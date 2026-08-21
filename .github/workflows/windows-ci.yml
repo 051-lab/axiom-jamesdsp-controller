@@ -27,11 +27,11 @@ jobs:
       - name: Build native console and tests
         run: cmake --build build-axiom-console --config Release
 
-      - name: Run native non-routing tests
+      - name: Run native LiveProg and Darwin tests
         run: ctest --test-dir build-axiom-console -C Release --output-on-failure
 
       - name: Build controller
         run: dotnet build AxiomConsoleHarness/AxiomJamesDSPController/AxiomJamesDSPController.csproj --configuration Release
 
-      - name: Run controller metadata tests
+      - name: Run controller metadata and package tests
         run: dotnet test AxiomConsoleHarness/AxiomJamesDSPController.Tests/AxiomJamesDSPController.Tests.csproj --configuration Release

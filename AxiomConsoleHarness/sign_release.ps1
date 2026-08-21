@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $harness = Split-Path -Parent $MyInvocation.MyCommand.Path
-$package = Join-Path $harness "dist\AxiomJamesDSPController-win-x64"
+$package = Join-Path $harness "dist\JamesDSPController-win-x64"
 $installerDir = Join-Path $harness "dist\installer"
 
 $signtoolCandidates = @(
@@ -21,11 +21,12 @@ if (-not $signtool) {
 }
 
 $targets = @(
-    (Join-Path $package "AxiomJamesDSPConsole.exe"),
-    (Join-Path $package "AxiomJamesDSPController.exe"),
-    (Join-Path $package "AxiomJamesDSPController.dll")
+    (Join-Path $package "JamesDSPConsole.exe"),
+    (Join-Path $package "JamesDSPController.exe"),
+    (Join-Path $package "JamesDSPController.dll"),
+    (Join-Path $package "JamesDSPController.Core.dll")
 )
-$installer = Get-ChildItem $installerDir -Filter "AxiomJamesDSPController-*-win-x64-setup.exe" |
+$installer = Get-ChildItem $installerDir -Filter "JamesDSPController-*-win-x64-setup.exe" |
     Sort-Object LastWriteTimeUtc -Descending |
     Select-Object -First 1
 if ($installer) {

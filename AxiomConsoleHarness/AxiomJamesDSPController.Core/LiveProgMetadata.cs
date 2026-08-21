@@ -7,6 +7,7 @@ public sealed record LiveProgParameterMetadata(
     string Key,
     string Description,
     double? Default,
+    double? InitialValue,
     double Minimum,
     double Maximum,
     double Step,
@@ -23,11 +24,11 @@ public static partial class LiveProgMetadataParser
 
     private const string NumberPattern = @"[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?";
 
-    [GeneratedRegex(@"^\s*(?://\s*)?(?<key>\w+)\s*:\s*(?<default>[+-]?\d+)?\s*<\s*(?<min>[+-]?\d+)\s*,\s*(?<max>[+-]?\d+)(?:\s*,\s*(?<step>[+-]?\d+))?\s*\{(?<options>[^}]*)\}\s*>\s*(?<description>.*)\s*$")]
+    [GeneratedRegex(@"^\s*(?://\s*)?(?<key>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<default>[+-]?\d+)?\s*<\s*(?<min>[+-]?\d+)\s*,\s*(?<max>[+-]?\d+)(?:\s*,\s*(?<step>[+-]?\d+))?\s*\{(?<options>[^}]*)\}\s*>\s*(?<description>.*)\s*$")]
     private static partial Regex ListDeclaration();
 
     private static readonly Regex RangeDeclaration = new(
-        $@"^\s*(?://\s*)?(?<key>\w+)\s*:\s*(?<default>{NumberPattern})?\s*<\s*(?<min>{NumberPattern})\s*,\s*(?<max>{NumberPattern})(?:\s*,\s*(?<step>{NumberPattern}))?\s*>\s*(?<description>.*)\s*$",
+        $@"^\s*(?://\s*)?(?<key>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?<default>{NumberPattern})?\s*<\s*(?<min>{NumberPattern})\s*,\s*(?<max>{NumberPattern})(?:\s*,\s*(?<step>{NumberPattern}))?\s*>\s*(?<description>.*)\s*$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static LiveProgMetadata Parse(string source)
@@ -65,7 +66,19 @@ public static partial class LiveProgMetadataParser
             if (parameters.Count == MaximumParameters) break;
         }
 
-        return new LiveProgMetadata(description, tags, parameters);
+        return new LiveProgMetadata(
+            description,
+            tags,
+            parameters.Select(parameter =>
+            {
+                var initialValue = parameter.Default ?? FindInitialValue(source, parameter.Key);
+                return parameter with
+                {
+                    InitialValue = initialValue is null
+                        ? null
+                        : Math.Clamp(initialValue.Value, parameter.Minimum, parameter.Maximum)
+                };
+            }).ToArray());
     }
 
     private static LiveProgParameterMetadata? ParseList(string line)
@@ -75,7 +88,7 @@ public static partial class LiveProgMetadataParser
             !TryParseInteger(match.Groups["min"].Value, out var minimum) ||
             !TryParseInteger(match.Groups["max"].Value, out var maximum) ||
             !TryParseInteger(match.Groups["step"].Success ? match.Groups["step"].Value : "1", out var step) ||
-            minimum != 0 || minimum >= maximum || step <= 0)
+            minimum != 0 || minimum >= maximum || step != 1)
         {
             return null;
         }
@@ -84,17 +97,19 @@ public static partial class LiveProgMetadataParser
         if (match.Groups["default"].Success)
         {
             if (!TryParseInteger(match.Groups["default"].Value, out var parsedDefault)) return null;
+            if (parsedDefault < minimum || parsedDefault > maximum) return null;
             defaultValue = parsedDefault;
         }
 
         var options = match.Groups["options"].Value
             .Split(',', StringSplitOptions.TrimEntries);
-        if (options.Length == 0 || options.Any(string.IsNullOrEmpty)) return null;
+        if (options.Length == 0 || options.Any(string.IsNullOrEmpty) || maximum != options.Length - 1) return null;
 
         return new LiveProgParameterMetadata(
             match.Groups["key"].Value,
             match.Groups["description"].Value.Trim(),
             defaultValue,
+            null,
             minimum,
             maximum,
             step,
@@ -117,6 +132,7 @@ public static partial class LiveProgMetadataParser
         if (match.Groups["default"].Success)
         {
             if (!TryParseFinite(match.Groups["default"].Value, out var parsedDefault)) return null;
+            if (parsedDefault < minimum || parsedDefault > maximum) return null;
             defaultValue = parsedDefault;
         }
 
@@ -124,10 +140,27 @@ public static partial class LiveProgMetadataParser
             match.Groups["key"].Value,
             match.Groups["description"].Value.Trim(),
             defaultValue,
+            null,
             minimum,
             maximum,
             step,
             Array.Empty<string>());
+    }
+
+    private static double? FindInitialValue(string source, string key)
+    {
+        var assignment = new Regex(
+            $@"(?<![\w.]){Regex.Escape(key)}\s*=\s*(?<value>{NumberPattern})\s*;",
+            RegexOptions.CultureInvariant);
+        using var reader = new StringReader(source);
+        while (reader.ReadLine() is { } line)
+        {
+            var comment = line.IndexOf("//", StringComparison.Ordinal);
+            var code = comment < 0 ? line : line[..comment];
+            var match = assignment.Match(code);
+            if (match.Success && TryParseFinite(match.Groups["value"].Value, out var value)) return value;
+        }
+        return null;
     }
 
     private static bool TryParseInteger(string text, out double value)

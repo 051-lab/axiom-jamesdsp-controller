@@ -8,10 +8,56 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstring>
 #include <vector>
 
 // dr_wav for WAV file loading (already implemented in libjamesdsp)
 #include "Effects/eel2/dr_wav.h"
+
+namespace {
+struct LoadedImpulse {
+    std::vector<float> samples;
+    unsigned int channels = 0;
+    size_t frames = 0;
+};
+
+bool LoadImpulseFile(const std::string& path, LoadedImpulse& impulse) {
+    drwav wav;
+    if (!drwav_init_file(&wav, path.c_str(), nullptr)) return false;
+    impulse.channels = wav.channels;
+    impulse.frames = static_cast<size_t>(wav.totalPCMFrameCount);
+    impulse.samples.resize(impulse.frames * impulse.channels);
+    const drwav_uint64 read = drwav_read_pcm_frames_f32(
+        &wav,
+        wav.totalPCMFrameCount,
+        impulse.samples.data());
+    drwav_uninit(&wav);
+    if (read != impulse.frames || impulse.channels == 0) {
+        impulse = {};
+        return false;
+    }
+    return true;
+}
+
+double DarwinHeadroomScale(const std::vector<float>& samples) {
+    constexpr int responseBins = 2048;
+    constexpr double pi = 3.14159265358979323846;
+    double peak = 0.0;
+    for (int bin = 0; bin <= responseBins; ++bin) {
+        const double omega = pi * bin / responseBins;
+        double real = 0.0;
+        double imaginary = 0.0;
+        for (size_t tap = 0; tap < samples.size(); ++tap) {
+            real += samples[tap] * std::cos(omega * tap);
+            imaginary -= samples[tap] * std::sin(omega * tap);
+        }
+        peak = (std::max)(peak, std::hypot(real, imaginary));
+    }
+    if (!std::isfinite(peak) || peak <= 0.0) return 0.0;
+    return (std::min)(1.0, std::pow(10.0, -1.0 / 20.0) / peak);
+}
+}
 
 // ============== ConfigFile Implementation ==============
 
@@ -93,7 +139,8 @@ bool ConfigFile::load(const std::string& filename, DspConfig& config) {
         size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
         
-        std::string key = trim(line.substr(0, eq));
+        std::string originalKey = trim(line.substr(0, eq));
+        std::string key = originalKey;
         std::string value = trim(line.substr(eq + 1));
         std::transform(key.begin(), key.end(), key.begin(), ::tolower);
         
@@ -143,8 +190,14 @@ bool ConfigFile::load(const std::string& filename, DspConfig& config) {
             if (key == "enabled") config.liveprogEnabled = parseBool(value);
             else if (key == "file") config.liveprogFile = value;
             else if (key.rfind("param.", 0) == 0 && key.size() > 6) {
-                config.liveprogParams[key.substr(6)] = parseDouble(value);
+                config.liveprogParams[originalKey.substr(6)] = parseDouble(value);
             }
+        }
+        else if (currentSection == "darwin") {
+            if (key == "enabled") config.darwinEnabled = parseBool(value);
+            else if (key == "impulsefile") config.darwinImpulseFile = value;
+            else if (key == "harmonic") config.darwinHarmonic = parseDouble(value);
+            else if (key == "autoheadroom") config.darwinAutoHeadroom = parseBool(value);
         }
         else if (currentSection == "general") {
             if (key == "postgain") config.postGain = parseDouble(value);
@@ -222,21 +275,88 @@ bool ConfigFile::save(const std::string& filename, const DspConfig& config) {
     for (const auto& param : config.liveprogParams) {
         file << "param." << param.first << " = " << param.second << "\n";
     }
+    file << "\n[Darwin]\n";
+    file << "enabled = " << (config.darwinEnabled ? "true" : "false") << "\n";
+    file << "impulseFile = " << config.darwinImpulseFile << "\n";
+    file << "harmonic = " << config.darwinHarmonic << "\n";
+    file << "autoHeadroom = " << (config.darwinAutoHeadroom ? "true" : "false") << "\n";
     
     return true;
 }
 
 // ============== DspController Implementation ==============
 
-DspController::DspController(JamesDSPLib* dsp, int sampleRate)
-    : m_dsp(dsp), m_sampleRate(sampleRate) {
+DspController::DspController(JamesDSPLib* dsp, int sampleRate, int blockSize)
+    : m_dsp(dsp), m_sampleRate(sampleRate), m_blockSize(blockSize) {
 }
 
 DspController::~DspController() {
+    destroyEngine(m_retiringDarwinDsp);
+    destroyEngine(m_darwinDsp);
+}
+
+void DspController::destroyEngine(JamesDSPLib*& dsp) {
+    if (!dsp) return;
+    JamesDSPFree(dsp);
+    delete dsp;
+    dsp = nullptr;
+}
+
+void DspController::process(float* interleaved, size_t frames) {
+    if (!interleaved || frames == 0) return;
+    if (m_dsp && m_dsp->processFloatMultiplexd) {
+        m_dsp->processFloatMultiplexd(m_dsp, interleaved, interleaved, frames);
+    }
+
+    if (m_darwinCrossfadeFrames > 0) {
+        const size_t samples = frames * 2;
+        m_darwinInput.assign(interleaved, interleaved + samples);
+        m_darwinActiveOutput = m_darwinInput;
+        m_darwinRetiringOutput = m_darwinInput;
+        if (m_darwinDsp && m_darwinDsp->processFloatMultiplexd) {
+            m_darwinDsp->processFloatMultiplexd(
+                m_darwinDsp,
+                m_darwinActiveOutput.data(),
+                m_darwinActiveOutput.data(),
+                frames);
+        }
+        if (m_retiringDarwinDsp && m_retiringDarwinDsp->processFloatMultiplexd) {
+            m_retiringDarwinDsp->processFloatMultiplexd(
+                m_retiringDarwinDsp,
+                m_darwinRetiringOutput.data(),
+                m_darwinRetiringOutput.data(),
+                frames);
+        }
+        for (size_t frame = 0; frame < frames; ++frame) {
+            const float mix = static_cast<float>((std::min)(
+                1.0,
+                static_cast<double>(m_darwinCrossfadePosition + frame + 1)
+                    / static_cast<double>(m_darwinCrossfadeFrames)));
+            for (size_t channel = 0; channel < 2; ++channel) {
+                const size_t index = frame * 2 + channel;
+                interleaved[index] =
+                    m_darwinRetiringOutput[index] * (1.0f - mix)
+                    + m_darwinActiveOutput[index] * mix;
+            }
+        }
+        m_darwinCrossfadePosition += frames;
+        if (m_darwinCrossfadePosition >= m_darwinCrossfadeFrames) {
+            destroyEngine(m_retiringDarwinDsp);
+            m_darwinCrossfadeFrames = 0;
+            m_darwinCrossfadePosition = 0;
+            m_darwinOwnsOutput = m_darwinDsp != nullptr;
+            if (!m_darwinOwnsOutput) {
+                restorePrimaryOutputStages();
+            }
+        }
+    } else if (m_darwinDsp && m_darwinDsp->processFloatMultiplexd) {
+        m_darwinDsp->processFloatMultiplexd(m_darwinDsp, interleaved, interleaved, frames);
+    }
 }
 
 void DspController::applyLimiter(const DspConfig& config) {
     JLimiterSetCoefficients(m_dsp, config.limiterThreshold, config.limiterRelease);
+    JLimiterSetEnabled(m_dsp, m_darwinOwnsOutput ? 0 : 1);
 }
 
 void DspController::applyBassBoost(const DspConfig& config) {
@@ -267,7 +387,7 @@ void DspController::applyReverb(const DspConfig& config) {
 }
 
 void DspController::applyTube(const DspConfig& config) {
-    if (config.tubeEnabled) {
+    if (config.tubeEnabled && !m_darwinOwnsOutput) {
         VacuumTubeEnable(m_dsp);
         VacuumTubeSetGain(m_dsp, config.tubeGain);
     } else {
@@ -365,45 +485,29 @@ void DspController::applyDdc(const DspConfig& config) {
 }
 
 void DspController::applyConvolver(const DspConfig& config) {
-    if (config.convolverEnabled && !config.convolverFile.empty()) {
+    if (!m_darwinOwnsOutput && config.convolverEnabled && !config.convolverFile.empty()) {
         // Only reload if file changed
         if (m_loadedConvolverFile != config.convolverFile) {
             std::cout << "[CONVOLVER] Loading: " << config.convolverFile << std::endl;
-            
-            // Load WAV file using dr_wav
-            drwav wav;
-            if (!drwav_init_file(&wav, config.convolverFile.c_str(), nullptr)) {
+
+            LoadedImpulse impulse;
+            if (!LoadImpulseFile(config.convolverFile, impulse)) {
                 std::cerr << "[CONVOLVER] Failed to open file" << std::endl;
                 return;
             }
-            
-            std::cout << "[CONVOLVER] Format: " << wav.sampleRate << " Hz, " 
-                      << wav.channels << " ch, " << wav.totalPCMFrameCount << " frames" << std::endl;
-            
-            // Read as float
-            size_t totalSamples = wav.totalPCMFrameCount * wav.channels;
-            std::vector<float> samples(totalSamples);
-            drwav_uint64 samplesRead = drwav_read_pcm_frames_f32(&wav, wav.totalPCMFrameCount, samples.data());
-            drwav_uninit(&wav);
-            
-            if (samplesRead == 0) {
-                std::cerr << "[CONVOLVER] Failed to read samples" << std::endl;
-                return;
-            }
-            
-            // Pass to convolver (channels, length)
+
             int result = Convolver1DLoadImpulseResponse(
                 m_dsp,
-                samples.data(),
-                wav.channels,
-                static_cast<size_t>(samplesRead),
-                0  // updateOld = false
+                impulse.samples.data(),
+                impulse.channels,
+                impulse.frames,
+                0
             );
-            
+
             if (result >= 0) {
                 Convolver1DEnable(m_dsp);
                 m_loadedConvolverFile = config.convolverFile;
-                std::cout << "[CONVOLVER] Loaded successfully (" << samplesRead << " frames)" << std::endl;
+                std::cout << "[CONVOLVER] Loaded successfully (" << impulse.frames << " frames)" << std::endl;
             } else {
                 std::cerr << "[CONVOLVER] Failed to load IR (error " << result << ")" << std::endl;
             }
@@ -460,6 +564,97 @@ void DspController::applyLiveprog(const DspConfig& config) {
     }
 }
 
+JamesDSPLib* DspController::buildDarwinEngine(const DspConfig& config) {
+    LoadedImpulse impulse;
+    if (config.darwinImpulseFile.empty()
+        || !LoadImpulseFile(config.darwinImpulseFile, impulse)
+        || impulse.channels != 1
+        || impulse.frames != 256
+        || impulse.samples.size() != 256
+        || std::any_of(impulse.samples.begin(), impulse.samples.end(), [](float value) {
+            return !std::isfinite(value);
+        })) {
+        std::cerr << "[DARWIN] Invalid or missing 256-tap mono impulse: "
+                  << config.darwinImpulseFile << std::endl;
+        return nullptr;
+    }
+
+    const double harmonicPercent = std::isfinite(config.darwinHarmonic)
+        ? std::clamp(config.darwinHarmonic, 0.0, 100.0)
+        : 0.0;
+    const double harmonicAmount = std::pow(harmonicPercent / 100.0, 2.0);
+    double gain = 1.0;
+    if (config.darwinAutoHeadroom) {
+        gain = DarwinHeadroomScale(impulse.samples) / (1.0 + 0.2 * harmonicAmount);
+        if (!std::isfinite(gain) || gain <= 0.0) {
+            std::cerr << "[DARWIN] Unable to calculate safe filter headroom." << std::endl;
+            return nullptr;
+        }
+        for (float& sample : impulse.samples) sample *= static_cast<float>(gain);
+    }
+
+    auto* candidate = new JamesDSPLib();
+    memset(candidate, 0, sizeof(JamesDSPLib));
+    JamesDSPInit(candidate, m_blockSize, static_cast<float>(m_sampleRate));
+    JLimiterSetCoefficients(candidate, config.limiterThreshold, config.limiterRelease);
+    JLimiterSetEnabled(candidate, 1);
+    JamesDSPSetPostGain(candidate, config.postGain);
+    const int convolverResult = Convolver1DLoadImpulseResponse(
+        candidate,
+        impulse.samples.data(),
+        impulse.channels,
+        impulse.frames,
+        0);
+    if (convolverResult < 0) {
+        std::cerr << "[DARWIN] Convolver rejected the selected filter." << std::endl;
+        destroyEngine(candidate);
+        return nullptr;
+    }
+    Convolver1DEnable(candidate);
+    if (harmonicAmount > 0.0) {
+        VacuumTubeEnable(candidate);
+        VacuumTubeSetGain(candidate, 0.0);
+        VacuumTubeSetHarmonicGain(candidate, harmonicAmount);
+    } else {
+        VacuumTubeDisable(candidate);
+    }
+    std::cout << "[DARWIN] Prepared filter with "
+              << (config.darwinAutoHeadroom ? -20.0 * std::log10(gain) : 0.0)
+              << " dB headroom and " << harmonicPercent << "% harmonics." << std::endl;
+    return candidate;
+}
+
+bool DspController::applyDarwin(const DspConfig& config) {
+    JamesDSPLib* replacement = nullptr;
+    if (config.darwinEnabled) {
+        replacement = buildDarwinEngine(config);
+        if (!replacement) {
+            std::cerr << "[DARWIN] Update rejected; previous working filter remains active." << std::endl;
+            m_darwinUpdatePending = true;
+            return false;
+        }
+    } else if (!m_darwinDsp) {
+        m_darwinUpdatePending = false;
+        return true;
+    }
+
+    destroyEngine(m_retiringDarwinDsp);
+    m_retiringDarwinDsp = m_darwinDsp;
+    m_darwinDsp = replacement;
+    m_darwinCrossfadeFrames = static_cast<size_t>((std::max)(1, m_sampleRate / 100));
+    m_darwinCrossfadePosition = 0;
+    m_darwinOwnsOutput = true;
+    m_darwinUpdatePending = false;
+    return true;
+}
+
+void DspController::restorePrimaryOutputStages() {
+    applyLimiter(m_currentConfig);
+    applyTube(m_currentConfig);
+    applyConvolver(m_currentConfig);
+    JamesDSPSetPostGain(m_dsp, m_currentConfig.postGain);
+}
+
 void DspController::applyArbMag(const DspConfig& config) {
     if (config.arbMagEnabled && !config.arbMagResponse.empty()) {
         ArbitraryResponseEqualizerStringParser(m_dsp, 
@@ -477,7 +672,22 @@ void DspController::applyConfig(const DspConfig& config, bool forceRefresh) {
         m_loadedConvolverFile.clear();
     }
 
-    if (forceRefresh ||
+    const bool darwinChanged =
+        forceRefresh ||
+        m_darwinUpdatePending ||
+        config.darwinEnabled != m_currentConfig.darwinEnabled ||
+        config.darwinImpulseFile != m_currentConfig.darwinImpulseFile ||
+        config.darwinHarmonic != m_currentConfig.darwinHarmonic ||
+        config.darwinAutoHeadroom != m_currentConfig.darwinAutoHeadroom ||
+        (config.darwinEnabled &&
+            (config.limiterThreshold != m_currentConfig.limiterThreshold ||
+             config.limiterRelease != m_currentConfig.limiterRelease ||
+             config.postGain != m_currentConfig.postGain));
+    if (darwinChanged) {
+        applyDarwin(config);
+    }
+
+    if (forceRefresh || darwinChanged ||
         config.limiterThreshold != m_currentConfig.limiterThreshold ||
         config.limiterRelease != m_currentConfig.limiterRelease) {
         applyLimiter(config);
@@ -497,7 +707,7 @@ void DspController::applyConfig(const DspConfig& config, bool forceRefresh) {
         config.reverbPreset != m_currentConfig.reverbPreset) {
         applyReverb(config);
     }
-    if (forceRefresh ||
+    if (forceRefresh || darwinChanged ||
         config.tubeEnabled != m_currentConfig.tubeEnabled ||
         config.tubeGain != m_currentConfig.tubeGain) {
         applyTube(config);
@@ -527,7 +737,7 @@ void DspController::applyConfig(const DspConfig& config, bool forceRefresh) {
         config.ddcFile != m_currentConfig.ddcFile) {
         applyDdc(config);
     }
-    if (forceRefresh ||
+    if (forceRefresh || darwinChanged ||
         config.convolverEnabled != m_currentConfig.convolverEnabled ||
         config.convolverFile != m_currentConfig.convolverFile) {
         applyConvolver(config);
@@ -549,8 +759,8 @@ void DspController::applyConfig(const DspConfig& config, bool forceRefresh) {
         config.arbMagResponse != m_currentConfig.arbMagResponse) {
         applyArbMag(config);
     }
-    if (forceRefresh || config.postGain != m_currentConfig.postGain) {
-        JamesDSPSetPostGain(m_dsp, config.postGain);
+    if (forceRefresh || darwinChanged || config.postGain != m_currentConfig.postGain) {
+        JamesDSPSetPostGain(m_dsp, m_darwinOwnsOutput ? 0.0 : config.postGain);
     }
     
     m_currentConfig = config;
@@ -573,6 +783,14 @@ void DspController::printStatus() const {
     std::cout << "DDC:           " << (m_currentConfig.ddcEnabled ? "ON" : "OFF") << std::endl;
     std::cout << "Convolver:     " << (m_currentConfig.convolverEnabled ? "ON" : "OFF") << std::endl;
     std::cout << "LiveProg:      " << (m_currentConfig.liveprogEnabled ? "ON" : "OFF") << std::endl;
+    std::cout << "Darwin:        " << (m_darwinDsp ? "ON" : "OFF");
+    if (m_currentConfig.darwinEnabled) {
+        std::cout << " (" << m_currentConfig.darwinHarmonic << "% harmonics)";
+    }
+    if (m_darwinUpdatePending) {
+        std::cout << " [requested update rejected]";
+    }
+    std::cout << std::endl;
     std::cout << "Post Gain:     " << m_currentConfig.postGain << " dB" << std::endl;
     std::cout << "==================\n" << std::endl;
 }

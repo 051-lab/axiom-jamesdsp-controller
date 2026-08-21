@@ -1,4 +1,4 @@
-# Axiom Windows Release Signing
+# JamesDSP Controller Windows Release Signing
 
 The release package does not contain certificate files, passwords, private
 keys, or fixed certificate thumbprints.

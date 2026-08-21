@@ -1,6 +1,9 @@
 @echo off
 setlocal
 
-cd /d "%~dp0AxiomJamesDSPController"
-dotnet build -c Release
-exit /b %errorlevel%
+pushd "%~dp0AxiomJamesDSPController"
+if errorlevel 1 exit /b %errorlevel%
+dotnet build -c Release --artifacts-path "%TEMP%\jamesdsp-controller-artifacts"
+set "BUILD_EXIT=%errorlevel%"
+popd
+exit /b %BUILD_EXIT%
