@@ -13,6 +13,7 @@
 #include <sstream>
 #include <map>
 #include <algorithm>
+#include <vector>
 #include <windows.h>
 
 extern "C" {
@@ -104,6 +105,12 @@ struct DspConfig {
     bool liveprogEnabled = false;
     std::string liveprogFile;  // Path to .eel script
     std::map<std::string, double> liveprogParams;
+
+    // === Darwin filter package output ===
+    bool darwinEnabled = false;
+    std::string darwinImpulseFile;
+    double darwinHarmonic = 0.0;
+    bool darwinAutoHeadroom = true;
     
     // === Arbitrary Magnitude EQ ===
     bool arbMagEnabled = false;
@@ -132,16 +139,27 @@ private:
 // Apply configuration to JamesDSPLib
 class DspController {
 public:
-    DspController(JamesDSPLib* dsp, int sampleRate);
+    DspController(JamesDSPLib* dsp, int sampleRate, int blockSize);
     ~DspController();
     
     void applyConfig(const DspConfig& config, bool forceRefresh = false);
+    void process(float* interleaved, size_t frames);
     void printStatus() const;
     
 private:
     JamesDSPLib* m_dsp;
     int m_sampleRate;
+    int m_blockSize;
     DspConfig m_currentConfig;
+    JamesDSPLib* m_darwinDsp = nullptr;
+    JamesDSPLib* m_retiringDarwinDsp = nullptr;
+    size_t m_darwinCrossfadeFrames = 0;
+    size_t m_darwinCrossfadePosition = 0;
+    bool m_darwinOwnsOutput = false;
+    bool m_darwinUpdatePending = false;
+    std::vector<float> m_darwinInput;
+    std::vector<float> m_darwinActiveOutput;
+    std::vector<float> m_darwinRetiringOutput;
     
     // Cache for file-based effects
     std::string m_loadedDdcFile;
@@ -159,5 +177,9 @@ private:
     void applyDdc(const DspConfig& config);
     void applyConvolver(const DspConfig& config);
     void applyLiveprog(const DspConfig& config);
+    bool applyDarwin(const DspConfig& config);
     void applyArbMag(const DspConfig& config);
+    void restorePrimaryOutputStages();
+    JamesDSPLib* buildDarwinEngine(const DspConfig& config);
+    static void destroyEngine(JamesDSPLib*& dsp);
 };

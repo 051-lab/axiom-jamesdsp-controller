@@ -775,7 +775,7 @@ void DspManager::setLiveProgContent(bool enabled, const QString& content) {
             return;
         }
 
-        int result = LiveProgStringParser(&m_jdsp, const_cast<char*>(content.toStdString().c_str()));
+        int result = LiveProgStringParser(&m_jdsp, const_cast<char*>(content.toStdString().c_str()), nullptr, 0);
         
         if (result == 1) {
             LiveProgEnable(&m_jdsp);
@@ -861,9 +861,8 @@ void DspManager::setLiveProgParam(const QString& name, double value) {
     QMutexLocker locker(&m_mutex);
     if(!m_initialized) return;
     
-    // We need to declare LiveProgSetVar in this file context or header
-    // It's in jdsp_header.h, so it should be available.
-    LiveProgSetVar(&m_jdsp, name.toStdString().c_str(), value);
+    if (!LiveProgSetVariable(&m_jdsp, name.toStdString().c_str(), static_cast<float>(value)))
+        qWarning() << "[DSP] Rejected LiveProg variable update:" << name;
 }
 
 // Helper to get IR for visualization

@@ -1,5 +1,9 @@
 # Axiom Controller Wrap-Up Checklist
 
+> Historical Axiom qualification checklist. For the current generic LiveProg
+> controller, Darwin module, package names, and validation commands, use
+> [README.md](README.md) and [SOAK-TESTING.md](SOAK-TESTING.md).
+
 This checklist defines the remaining work before shifting attention back to
 the Axiom-DSP EEL track.
 

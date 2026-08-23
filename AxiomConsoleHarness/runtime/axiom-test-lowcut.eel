@@ -1,5 +1,5 @@
-desc: Axiom Route Test - Extreme Low Cut
-// Temporary routing-verification script. Not an Axiom candidate.
+desc: JamesDSP Route Test - Extreme Low Cut
+// Temporary routing-verification script, not a production DSP program.
 
 slider1:3500<80,6000,10>Low-cut frequency (Hz)
 slider2:8<1,8,1>Filter stages

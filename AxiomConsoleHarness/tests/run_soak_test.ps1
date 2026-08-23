@@ -12,27 +12,27 @@ param(
 $ErrorActionPreference = "Stop"
 $harness = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $package = if ([string]::IsNullOrWhiteSpace($ApplicationRoot)) {
-    Join-Path $harness "dist\AxiomJamesDSPController-win-x64"
+    Join-Path $harness "dist\JamesDSPController-win-x64"
 } else {
     [IO.Path]::GetFullPath($ApplicationRoot)
 }
-$controllerExe = Join-Path $package "AxiomJamesDSPController.exe"
-$consoleExe = Join-Path $package "AxiomJamesDSPConsole.exe"
+$controllerExe = Join-Path $package "JamesDSPController.exe"
+$consoleExe = Join-Path $package "JamesDSPConsole.exe"
 $runStamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$runRoot = Join-Path $env:LOCALAPPDATA "Axiom\SoakTests\$runStamp"
+$runRoot = Join-Path $env:LOCALAPPDATA "JamesDSP\SoakTests\$runStamp"
 $dataRoot = Join-Path $runRoot "data"
 $reportJson = Join-Path $runRoot "soak-report.json"
 $reportMarkdown = Join-Path $runRoot "soak-report.md"
 $probeLogPath = Join-Path $runRoot "soak-probe.log"
 $historyPath = Join-Path $dataRoot "diagnostics\health-history.jsonl"
-$configPath = Join-Path $dataRoot "axiom-liveprog-test.ini"
+$configPath = Join-Path $dataRoot "jamesdsp-controller.ini"
 $originalDefault = $null
 $controllerProcess = $null
 $probeProcess = $null
 $capture = $null
 $output = $null
 $powerStateAtStart = $null
-$previousDataRoot = $env:AXIOM_DATA_ROOT
+$previousDataRoot = $env:JAMESDSP_DATA_ROOT
 $observations = [System.Collections.Generic.List[object]]::new()
 $recoveryEvents = [System.Collections.Generic.List[object]]::new()
 $reloadEvents = [System.Collections.Generic.List[object]]::new()
@@ -69,7 +69,7 @@ function Get-PowerSourceChanges([datetime]$Since) {
 }
 
 function Stop-AxiomProcesses {
-    Get-Process AxiomJamesDSPController,AxiomJamesDSPConsole -ErrorAction SilentlyContinue |
+    Get-Process JamesDSPController,JamesDSPConsole,AxiomJamesDSPController,AxiomJamesDSPConsole -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 500
 }
@@ -80,7 +80,7 @@ function Find-AxiomButton([string]$Name) {
     $root = [System.Windows.Automation.AutomationElement]::RootElement
     $windowCondition = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::NameProperty,
-        "Axiom JamesDSP Controller")
+        "JamesDSP Controller")
     $window = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $windowCondition)
     if (-not $window) { return $null }
     $buttonCondition = New-Object System.Windows.Automation.PropertyCondition(
@@ -101,7 +101,7 @@ function Wait-ForPath([string]$Path, [int]$TimeoutSeconds = 15) {
 function Wait-ForProcessor([int]$PreviousPid = 0, [int]$TimeoutSeconds = 15) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $candidate = Get-Process AxiomJamesDSPConsole -ErrorAction SilentlyContinue |
+        $candidate = Get-Process JamesDSPConsole -ErrorAction SilentlyContinue |
             Where-Object { $_.Id -ne $PreviousPid } |
             Select-Object -First 1
         if ($candidate) { return $candidate }
@@ -250,7 +250,7 @@ function New-SoakMetrics([object[]]$Samples) {
 
 function New-SoakGates([object]$Metrics) {
     $gates = [System.Collections.Generic.List[object]]::new()
-    $controllerAlive = $null -ne (Get-Process AxiomJamesDSPController -ErrorAction SilentlyContinue)
+    $controllerAlive = $null -ne (Get-Process JamesDSPController -ErrorAction SilentlyContinue)
     $processorAlive = @(Get-LiveProcessorProcesses).Count -eq 1
 
     Add-Gate $gates "controller remained running" $controllerAlive "alive=$controllerAlive"
@@ -415,7 +415,7 @@ function New-SoakClassification([string]$SourceResult, [object]$Metrics, [object
 function Get-ProcessorProcessDetails {
     return @(
         Get-CimInstance Win32_Process |
-            Where-Object { $_.Name -in @("AxiomJamesDSPController.exe", "AxiomJamesDSPConsole.exe") } |
+            Where-Object { $_.Name -in @("JamesDSPController.exe", "JamesDSPConsole.exe", "AxiomJamesDSPController.exe", "AxiomJamesDSPConsole.exe") } |
             Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine, CreationDate
     )
 }
@@ -424,7 +424,7 @@ function Get-LiveProcessorProcesses {
     $ids = @(
         Get-CimInstance Win32_Process |
             Where-Object {
-                $_.Name -eq "AxiomJamesDSPConsole.exe" -and
+                $_.Name -eq "JamesDSPConsole.exe" -and
                 $_.CommandLine -match "(^|\s)--watch-config(\s|$)"
             } |
             ForEach-Object { [int]$_.ProcessId }
@@ -440,7 +440,7 @@ function Write-Reports([object]$Report) {
     $Report | ConvertTo-Json -Depth 8 | Set-Content $reportJson -Encoding UTF8
 
     $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.Add("# Axiom Windows Soak Report")
+    $lines.Add("# JamesDSP Controller Windows Soak Report")
     $lines.Add("")
     $lines.Add("- Result: **$($Report.result.ToUpperInvariant())**")
     $lines.Add("- Started: $($Report.startedAt)")
@@ -536,7 +536,7 @@ try {
     $originalDefault = & $consoleExe --get-default-json | ConvertFrom-Json
     $devices = (& $consoleExe --list-devices-json | ConvertFrom-Json).devices
 
-    $env:AXIOM_DATA_ROOT = $dataRoot
+    $env:JAMESDSP_DATA_ROOT = $dataRoot
     $controllerProcess = Start-Process -FilePath $controllerExe -PassThru
     if (-not (Wait-ForPath (Join-Path $dataRoot "controller-state.json"))) {
         throw "Controller state was not created."
@@ -594,7 +594,7 @@ try {
         $activeProcessor = $activeProcessors[0]
         $observations.Add([ordered]@{
             timestamp = (Get-Date).ToUniversalTime().ToString("O")
-            controllerRunning = $null -ne (Get-Process AxiomJamesDSPController -ErrorAction SilentlyContinue)
+            controllerRunning = $null -ne (Get-Process JamesDSPController -ErrorAction SilentlyContinue)
             processorPid = if ($activeProcessor) { $activeProcessor.Id } else { 0 }
             processorPids = @($activeProcessors.Id)
             healthSamples = @(Read-HealthSamples).Count
@@ -620,13 +620,13 @@ try {
                 if (-not (Test-Path $configPath)) { throw "Runtime config is unavailable for reload testing." }
                 $pidBefore = $activeProcessor.Id
                 $configText = Get-Content $configPath -Raw
-                if ($configText -notmatch "(?m)^param\.slider1\s*=") {
-                    throw "The runtime config does not expose Axiom LiveProg parameters."
+                if ($configText -notmatch "(?m)^postGain\s*=") {
+                    throw "The runtime config does not expose the post-gain hot-reload setting."
                 }
                 $configText = [regex]::Replace(
                     $configText,
-                    "(?m)^param\.slider1\s*=.*$",
-                    "param.slider1 = $($reloadValue.ToString([Globalization.CultureInfo]::InvariantCulture))")
+                    "(?m)^postGain\s*=.*$",
+                    "postGain = $($reloadValue.ToString([Globalization.CultureInfo]::InvariantCulture))")
                 Set-Content -Path $configPath -Value $configText -Encoding UTF8
                 Start-Sleep -Seconds 3
                 $afterReloadProcessors = @(Get-LiveProcessorProcesses)
@@ -635,7 +635,7 @@ try {
                     timestamp = (Get-Date).ToUniversalTime().ToString("O")
                     processorPid = $pidBefore
                     processorPidsAfter = @($afterReloadProcessors.Id)
-                    parameter = "slider1"
+                    parameter = "postGain"
                     value = $reloadValue
                     survived = $survived
                 })
@@ -774,14 +774,14 @@ finally {
             Stop-Process -Id $controllerProcess.Id -Force -ErrorAction SilentlyContinue
         }
     }
-    Get-Process AxiomJamesDSPConsole -ErrorAction SilentlyContinue |
+    Get-Process JamesDSPConsole,AxiomJamesDSPConsole -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
     if ($originalDefault -and $null -ne $originalDefault.index -and $originalDefault.index -ge 0) {
         & $consoleExe --set-default $originalDefault.index | Out-Null
     }
     if ($null -eq $previousDataRoot) {
-        Remove-Item Env:AXIOM_DATA_ROOT -ErrorAction SilentlyContinue
+        Remove-Item Env:JAMESDSP_DATA_ROOT -ErrorAction SilentlyContinue
     } else {
-        $env:AXIOM_DATA_ROOT = $previousDataRoot
+        $env:JAMESDSP_DATA_ROOT = $previousDataRoot
     }
 }

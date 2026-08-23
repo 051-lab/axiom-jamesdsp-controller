@@ -4,10 +4,23 @@
 #include <math.h>
 #include <float.h>
 #include "../jdsp_header.h"
+
+static inline float VTBlockDc(VacuumTube *tb, int channel, float input)
+{
+	float output = input - tb->dcBlockInput[channel] +
+		tb->dcBlockCoefficient * tb->dcBlockOutput[channel];
+	tb->dcBlockInput[channel] = input;
+	tb->dcBlockOutput[channel] = output;
+	return output;
+}
 void VTInit(VacuumTube *tb, double fs)
 {
 	tb->pregain = 1.0f;
 	tb->postgain = 1.0f;
+	tb->harmonicGain = 1.0f;
+	tb->dcBlockCoefficient = (float)exp(-2.0 * M_PI * 5.0 / fs);
+	memset(tb->dcBlockInput, 0, sizeof(tb->dcBlockInput));
+	memset(tb->dcBlockOutput, 0, sizeof(tb->dcBlockOutput));
 	tb->needOversample = 0;
 	if (fs >= 30000.0 && fs < 65000.0)
 	{
@@ -69,11 +82,11 @@ void VTProcess(VacuumTube *tb, float *x1, float *x2, float *out1, float *out2, s
 				double harmonic3Ch2 = bandCh2[2] * bandCh2[2];
 				double harmonic4Ch2 = bandCh2[3] * bandCh2[3];
 				double harmonic5Ch2 = bandCh2[4] * bandCh2[4];
-				upsample[0][j] = (float)(bandCh1[0] + (harmonic2Ch1 + harmonic3Ch1 + harmonic4Ch1 + harmonic5Ch1) * 0.2 + allpassCh1 + bandCh1[5]);
-				upsample[1][j] = (float)(bandCh2[0] + (harmonic2Ch2 + harmonic3Ch2 + harmonic4Ch2 + harmonic5Ch2) * 0.2 + allpassCh2 + bandCh2[5]);
+				upsample[0][j] = (float)(bandCh1[0] + (harmonic2Ch1 + harmonic3Ch1 + harmonic4Ch1 + harmonic5Ch1) * 0.2 * tb->harmonicGain + allpassCh1 + bandCh1[5]);
+				upsample[1][j] = (float)(bandCh2[0] + (harmonic2Ch2 + harmonic3Ch2 + harmonic4Ch2 + harmonic5Ch2) * 0.2 * tb->harmonicGain + allpassCh2 + bandCh2[5]);
 			}
-			out1[i] = oversample_stepdownSmpFloat(&tb->smp[0], upsample[0]) * tb->postgain;
-			out2[i] = oversample_stepdownSmpFloat(&tb->smp[1], upsample[1]) * tb->postgain;
+			out1[i] = VTBlockDc(tb, 0, oversample_stepdownSmpFloat(&tb->smp[0], upsample[0]) * tb->postgain);
+			out2[i] = VTBlockDc(tb, 1, oversample_stepdownSmpFloat(&tb->smp[1], upsample[1]) * tb->postgain);
 		}
 	}
 	else
@@ -98,8 +111,10 @@ void VTProcess(VacuumTube *tb, float *x1, float *x2, float *out1, float *out2, s
 			double harmonic3Ch2 = bandCh2[2] * bandCh2[2];
 			double harmonic4Ch2 = bandCh2[3] * bandCh2[3];
 			double harmonic5Ch2 = bandCh2[4] * bandCh2[4];
-			out1[j] = (float)(bandCh1[0] + (harmonic2Ch1 + harmonic3Ch1 + harmonic4Ch1 + harmonic5Ch1) * 0.25f + allpassCh1 + bandCh1[5]) * tb->postgain;
-			out2[j] = (float)(bandCh2[0] + (harmonic2Ch2 + harmonic3Ch2 + harmonic4Ch2 + harmonic5Ch2) * 0.25f + allpassCh2 + bandCh2[5]) * tb->postgain;
+			float processedCh1 = (float)(bandCh1[0] + (harmonic2Ch1 + harmonic3Ch1 + harmonic4Ch1 + harmonic5Ch1) * 0.25f * tb->harmonicGain + allpassCh1 + bandCh1[5]) * tb->postgain;
+			float processedCh2 = (float)(bandCh2[0] + (harmonic2Ch2 + harmonic3Ch2 + harmonic4Ch2 + harmonic5Ch2) * 0.25f * tb->harmonicGain + allpassCh2 + bandCh2[5]) * tb->postgain;
+			out1[j] = VTBlockDc(tb, 0, processedCh1);
+			out2[j] = VTBlockDc(tb, 1, processedCh2);
 		}
 	}
 }
@@ -114,6 +129,8 @@ void VacuumTubeDisable(JamesDSPLib *jdsp)
 }
 void VacuumTubeSetGain(JamesDSPLib *jdsp, double dbGain)
 {
+	if (!isfinite(dbGain))
+		return;
 	if (dbGain > 12.0)
 		dbGain = 12.0;
 	if (dbGain < -3.0)
@@ -124,4 +141,10 @@ void VacuumTubeSetGain(JamesDSPLib *jdsp, double dbGain)
 void VacuumTubeProcess(JamesDSPLib *jdsp, size_t n)
 {
 	VTProcess(&jdsp->tube, jdsp->tmpBuffer[0], jdsp->tmpBuffer[1], jdsp->tmpBuffer[0], jdsp->tmpBuffer[1], n);
+}
+void VacuumTubeSetHarmonicGain(JamesDSPLib *jdsp, double amount)
+{
+	if (!isfinite(amount))
+		return;
+	jdsp->tube.harmonicGain = fmax(0.0, fmin(1.0, amount));
 }

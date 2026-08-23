@@ -9,11 +9,19 @@ param(
 $ErrorActionPreference = "Stop"
 $tests = Split-Path -Parent $MyInvocation.MyCommand.Path
 $harness = Split-Path -Parent $tests
-$applicationRoot = "$env:ProgramFiles\Axiom JamesDSP Controller"
-$consoleExe = Join-Path $applicationRoot "AxiomJamesDSPConsole.exe"
-$dataRoot = Join-Path $env:LOCALAPPDATA "Axiom\JamesDSPController"
+$newApplicationRoot = Join-Path $env:ProgramFiles "JamesDSP Controller"
+$legacyApplicationRoot = Join-Path $env:ProgramFiles "Axiom JamesDSP Controller"
+$applicationRoot = if (Test-Path (Join-Path $newApplicationRoot "JamesDSPController.exe")) {
+    $newApplicationRoot
+} elseif (Test-Path (Join-Path $legacyApplicationRoot "JamesDSPController.exe")) {
+    $legacyApplicationRoot
+} else {
+    $newApplicationRoot
+}
+$consoleExe = Join-Path $applicationRoot "JamesDSPConsole.exe"
+$dataRoot = Join-Path $env:LOCALAPPDATA "JamesDSP\Controller"
 $healthPath = Join-Path $dataRoot "diagnostics\health-history.jsonl"
-$qualificationRoot = Join-Path $env:LOCALAPPDATA "Axiom\ManualRecovery"
+$qualificationRoot = Join-Path $env:LOCALAPPDATA "JamesDSP\ManualRecovery"
 $activeSessionPath = Join-Path $qualificationRoot "active-session.json"
 
 function Read-JsonFile([string]$Path) {
@@ -61,7 +69,7 @@ function Get-Snapshot {
         Select-Object -First 1
     $processors = @(
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @("AxiomJamesDSPController.exe", "AxiomJamesDSPConsole.exe") } |
+            Where-Object { $_.Name -in @("JamesDSPController.exe", "JamesDSPConsole.exe", "AxiomJamesDSPController.exe", "AxiomJamesDSPConsole.exe") } |
             Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CreationDate
     )
     return [ordered]@{
@@ -164,7 +172,7 @@ $events = @(
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
         ForEach-Object { $_ | ConvertFrom-Json }
 )
-$processorCounts = @($timeline | ForEach-Object { @($_.processes | Where-Object Name -eq "AxiomJamesDSPConsole.exe").Count })
+$processorCounts = @($timeline | ForEach-Object { @($_.processes | Where-Object Name -eq "JamesDSPConsole.exe").Count })
 $deviceFingerprints = @(
     $timeline |
         ForEach-Object { (@($_.devices | Sort-Object id | ForEach-Object id) -join "|") } |
@@ -187,7 +195,7 @@ $report = [ordered]@{
 $report | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $SessionRoot "manual-recovery-report.json") -Encoding UTF8
 
 $lines = [System.Collections.Generic.List[string]]::new()
-$lines.Add("# Axiom Manual Recovery Qualification")
+$lines.Add("# JamesDSP Controller Manual Recovery Qualification")
 $lines.Add("")
 $lines.Add("- Result: **REVIEW REQUIRED**")
 $lines.Add("- Started: $($active.startedAtUtc)")

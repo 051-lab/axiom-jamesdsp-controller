@@ -1,5 +1,5 @@
-desc: Axiom Route Test - Pulse Gate
-// Temporary LiveProg routing-verification script. Not an Axiom candidate.
+desc: JamesDSP Route Test - Pulse Gate
+// Temporary LiveProg routing-verification script, not a production DSP program.
 
 slider1:2<0.5,8,0.5>Pulse rate (Hz)
 slider2:-48<-60,-6,1>Muted level (dB)

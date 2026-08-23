@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
@@ -11,15 +12,20 @@ namespace AxiomJamesDSPController;
 
 internal static class Program
 {
-    private const string InstanceMutexName = @"Local\AxiomJamesDSPController.SingleInstance";
+    private const string InstanceMutexName = @"Local\JamesDSPController.SingleInstance";
+    private const string LegacyInstanceMutexName = @"Local\AxiomJamesDSPController.SingleInstance";
 
     [STAThread]
     private static void Main()
     {
         using var instanceMutex = new Mutex(true, InstanceMutexName, out var ownsMutex);
-        if (!ownsMutex)
+        using var legacyInstanceMutex = new Mutex(true, LegacyInstanceMutexName, out var ownsLegacyMutex);
+        if (!ownsMutex || !ownsLegacyMutex)
         {
-            NativeWindowActivation.ActivateExistingWindow("Axiom JamesDSP Controller");
+            if (!NativeWindowActivation.ActivateExistingWindow("JamesDSP Controller"))
+            {
+                NativeWindowActivation.ActivateExistingWindow("Axiom JamesDSP Controller");
+            }
             return;
         }
 
@@ -44,7 +50,7 @@ internal static class NativeWindowActivation
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr window);
 
-    public static void ActivateExistingWindow(string title)
+    public static bool ActivateExistingWindow(string title)
     {
         for (var attempt = 0; attempt < 10; attempt++)
         {
@@ -53,10 +59,11 @@ internal static class NativeWindowActivation
             {
                 if (IsIconic(window)) ShowWindow(window, SwRestore);
                 SetForegroundWindow(window);
-                return;
+                return true;
             }
             Thread.Sleep(100);
         }
+        return false;
     }
 }
 
@@ -65,39 +72,50 @@ internal sealed record AppPaths(
     string HarnessRoot,
     string DataRoot,
     string ConsoleExe,
-    string AcceptedEel)
+    string BundledEel)
 {
     public static AppPaths Resolve()
     {
         var appRoot = Path.GetFullPath(AppContext.BaseDirectory);
-        var explicitHarness = Environment.GetEnvironmentVariable("AXIOM_HARNESS_ROOT");
+        var explicitHarness = FirstEnvironmentVariable("JAMESDSP_HARNESS_ROOT", "AXIOM_HARNESS_ROOT");
         var harnessRoot = !string.IsNullOrWhiteSpace(explicitHarness)
             ? Path.GetFullPath(explicitHarness)
             : FindHarnessRoot(appRoot) ?? appRoot;
         var repositoryRoot = Directory.GetParent(harnessRoot)?.FullName ?? harnessRoot;
         var developmentLayout = File.Exists(Path.Combine(harnessRoot, "AxiomJamesDSPController", "AxiomJamesDSPController.csproj"));
-        var explicitData = Environment.GetEnvironmentVariable("AXIOM_DATA_ROOT");
+        var explicitData = FirstEnvironmentVariable("JAMESDSP_DATA_ROOT", "AXIOM_DATA_ROOT");
         var dataRoot = !string.IsNullOrWhiteSpace(explicitData)
             ? Path.GetFullPath(explicitData)
             : developmentLayout
                 ? harnessRoot
-                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Axiom", "JamesDSPController");
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JamesDSP", "Controller");
+
+        if (!developmentLayout && string.IsNullOrWhiteSpace(explicitData))
+        {
+            var legacyRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Axiom",
+                "JamesDSPController");
+            MigrateLegacyData(legacyRoot, dataRoot);
+        }
 
         var consoleExe = FirstExistingFile(
-            Environment.GetEnvironmentVariable("AXIOM_CONSOLE_EXE"),
+            FirstEnvironmentVariable("JAMESDSP_CONSOLE_EXE", "AXIOM_CONSOLE_EXE"),
+            Path.Combine(appRoot, "JamesDSPConsole.exe"),
+            Path.Combine(appRoot, "processor", "JamesDSPConsole.exe"),
+            Path.Combine(repositoryRoot, "build-axiom-console", "JamesDSPConsole.exe"),
             Path.Combine(appRoot, "AxiomJamesDSPConsole.exe"),
-            Path.Combine(appRoot, "processor", "AxiomJamesDSPConsole.exe"),
             Path.Combine(repositoryRoot, "build-axiom-console", "AxiomJamesDSPConsole.exe"))
-            ?? Path.Combine(appRoot, "AxiomJamesDSPConsole.exe");
+            ?? Path.Combine(appRoot, "JamesDSPConsole.exe");
 
-        var acceptedEel = FirstExistingFile(
-            Environment.GetEnvironmentVariable("AXIOM_ACCEPTED_EEL"),
+        var bundledEel = FirstExistingFile(
+            FirstEnvironmentVariable("JAMESDSP_BUNDLED_EEL", "AXIOM_ACCEPTED_EEL"),
             Path.Combine(appRoot, "assets", "Liveprog", "axiom_binaural_dsp_v4.1.4.11.eel"),
             Path.Combine(repositoryRoot, "JamesDSP-Windows", "build-final", "assets", "Liveprog", "axiom_binaural_dsp_v4.1.4.11.eel"),
             Path.Combine(harnessRoot, "runtime", "axiom-liveprog-current.eel"))
             ?? Path.Combine(appRoot, "assets", "Liveprog", "axiom_binaural_dsp_v4.1.4.11.eel");
 
-        return new AppPaths(appRoot, harnessRoot, dataRoot, consoleExe, acceptedEel);
+        return new AppPaths(appRoot, harnessRoot, dataRoot, consoleExe, bundledEel);
     }
 
     private static string? FindHarnessRoot(string start)
@@ -106,6 +124,7 @@ internal sealed record AppPaths(
         while (current is not null)
         {
             if (current.Name.Equals("AxiomConsoleHarness", StringComparison.OrdinalIgnoreCase)
+                || File.Exists(Path.Combine(current.FullName, "jamesdsp-controller.ini"))
                 || File.Exists(Path.Combine(current.FullName, "axiom-liveprog-test.ini")))
             {
                 return current.FullName;
@@ -118,6 +137,47 @@ internal sealed record AppPaths(
     private static string? FirstExistingFile(params string?[] candidates)
     {
         return candidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate));
+    }
+
+    private static string? FirstEnvironmentVariable(params string[] names)
+    {
+        return names.Select(Environment.GetEnvironmentVariable).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+    }
+
+    private static void MigrateLegacyData(string legacyRoot, string dataRoot)
+    {
+        if (!Directory.Exists(legacyRoot) || Directory.Exists(dataRoot)) return;
+
+        var stagingRoot = dataRoot + ".migration-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            foreach (var source in Directory.EnumerateFiles(legacyRoot, "*", SearchOption.AllDirectories))
+            {
+                var destination = Path.Combine(stagingRoot, Path.GetRelativePath(legacyRoot, source));
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(source, destination, overwrite: false);
+            }
+            Directory.Move(stagingRoot, dataRoot);
+        }
+        catch (IOException)
+        {
+            TryDeleteDirectory(stagingRoot);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            TryDeleteDirectory(stagingRoot);
+        }
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
+        }
     }
 }
 
@@ -150,7 +210,6 @@ internal sealed record HealthSample(
     string OutputId,
     int BufferMs,
     string Profile);
-internal sealed record AxiomParam(string Var, string Name, decimal Default, decimal Min, decimal Max, decimal Step);
 internal sealed class ControllerState
 {
     public int CaptureIndex { get; set; } = -1;
@@ -166,11 +225,12 @@ internal sealed class ControllerState
     public bool StartWithWindows { get; set; } = false;
     public bool AutoStartProcessor { get; set; } = false;
     public bool AutoFollowListeningDevice { get; set; } = true;
+    public Dictionary<string, Dictionary<string, decimal>> LiveProgValues { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
-internal sealed class AxiomProfile
+internal sealed class ControllerProfile
 {
-    public int SchemaVersion { get; set; } = 2;
+    public int SchemaVersion { get; set; } = 3;
     public string Name { get; set; } = "";
     public string Type { get; set; } = "";
     public DateTime SavedAtUtc { get; set; } = DateTime.UtcNow;
@@ -180,36 +240,37 @@ internal sealed class AxiomProfile
     public string OutputId { get; set; } = "";
     public int BufferMs { get; set; } = 200;
     public string LiveProgFile { get; set; } = "";
-    public bool LiveProgEnabled { get; set; } = true;
+    public bool LiveProgEnabled { get; set; } = false;
     public decimal PostGain { get; set; } = 0;
     public bool CrossfeedEnabled { get; set; } = false;
     public int CrossfeedMode { get; set; } = 0;
     public Dictionary<string, Dictionary<string, string>> Config { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, decimal> AxiomValues { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    [JsonPropertyName("AxiomValues")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, decimal>? LegacyAxiomValues { get; set; }
 }
 
 internal sealed class MainForm : Form
 {
     private readonly AppPaths paths;
     private readonly string configPath;
-    private readonly string sourceEelPath;
+    private readonly string bundledEelPath;
     private readonly string runtimeDir;
     private readonly string profileDir;
     private readonly string diagnosticsDir;
     private readonly string healthHistoryPath;
-    private readonly string runtimeEelPath;
+    private readonly string legacyRuntimeEelPath;
     private readonly string testLowCutEelPath;
     private readonly string testPulseGateEelPath;
     private readonly string consoleExe;
     private readonly string statePath;
     private readonly Dictionary<string, Dictionary<string, string>> config = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, decimal> axiomValues = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, decimal> liveProgValues = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, NumericUpDown> numericControls = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, NumericUpDown> axiomControls = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, CheckBox> checkControls = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ComboBox> comboControls = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TextBox> textControls = new(StringComparer.OrdinalIgnoreCase);
-    private readonly List<AxiomParam> axiomParams = new();
+    private readonly List<LiveProgParameterMetadata> liveProgParameters = new();
     private readonly System.Windows.Forms.Timer saveTimer = new() { Interval = 250 };
     private readonly System.Windows.Forms.Timer statusTimer = new() { Interval = 1000 };
     private readonly System.Windows.Forms.Timer routeMonitorTimer = new() { Interval = 3000 };
@@ -269,6 +330,14 @@ internal sealed class MainForm : Form
     private TextBox logBox = new();
     private TextBox diagnosticsBox = new();
     private TextBox? liveProgFileText;
+    private TextBox? darwinPackageText;
+    private ComboBox darwinFilterCombo = new();
+    private Label darwinStatusLabel = new();
+    private FlowLayoutPanel liveProgControlsPanel = new();
+    private Label liveProgNameLabel = new();
+    private Label liveProgStatusLabel = new();
+    private Button resetLiveProgButton = new();
+    private string activeLiveProgPath = "";
     private Button startButton = new();
     private Button stopButton = new();
     private string lastProcessorCommand = "";
@@ -293,13 +362,13 @@ internal sealed class MainForm : Form
     {
         paths = AppPaths.Resolve();
         Directory.CreateDirectory(paths.DataRoot);
-        configPath = Path.Combine(paths.DataRoot, "axiom-liveprog-test.ini");
-        sourceEelPath = paths.AcceptedEel;
+        configPath = Path.Combine(paths.DataRoot, "jamesdsp-controller.ini");
+        bundledEelPath = paths.BundledEel;
         runtimeDir = Path.Combine(paths.DataRoot, "runtime");
         profileDir = Path.Combine(paths.DataRoot, "profiles");
         diagnosticsDir = Path.Combine(paths.DataRoot, "diagnostics");
         healthHistoryPath = Path.Combine(diagnosticsDir, "health-history.jsonl");
-        runtimeEelPath = Path.Combine(runtimeDir, "axiom-liveprog-current.eel");
+        legacyRuntimeEelPath = Path.Combine(runtimeDir, "axiom-liveprog-current.eel");
         testLowCutEelPath = Path.Combine(runtimeDir, "axiom-test-lowcut.eel");
         testPulseGateEelPath = Path.Combine(runtimeDir, "axiom-test-pulse-gate.eel");
         consoleExe = paths.ConsoleExe;
@@ -307,7 +376,7 @@ internal sealed class MainForm : Form
 
         SeedDataFiles();
 
-        Text = "Axiom JamesDSP Controller";
+        Text = "JamesDSP Controller";
         Icon = appIcon;
         Width = 1180;
         Height = 760;
@@ -319,7 +388,7 @@ internal sealed class MainForm : Form
         saveTimer.Tick += (_, _) =>
         {
             saveTimer.Stop();
-            SaveConfigAndRuntimeEel();
+            SaveConfiguration();
         };
         statusTimer.Tick += (_, _) => UpdateStatus();
         routeMonitorTimer.Tick += (_, _) => MonitorRouteDevices();
@@ -328,25 +397,23 @@ internal sealed class MainForm : Form
         LoadConfig();
         NormalizePortableConfigPaths();
         LoadControllerState();
-        LoadAxiomParams();
-        LoadRuntimeAxiomValues();
         BuildUi();
         InitializeTrayIcon();
         RefreshDevices();
         RunFirstRunChecks();
-        SaveConfigAndRuntimeEel(selectAxiomRuntime: string.IsNullOrWhiteSpace(GetValue("LiveProg", "file", "")));
+        SaveConfiguration();
         statusTimer.Start();
         routeMonitorTimer.Start();
         UpdateStatus();
         if (controllerState.AutoStartProcessor)
         {
-            BeginInvoke(() =>
+            Shown += (_, _) =>
             {
                 if (ValidateRoute(captureDevice.SelectedItem as DeviceInfo, outputDevice.SelectedItem as DeviceInfo) is null)
                 {
                     StartProcessor();
                 }
-            });
+            };
         }
     }
 
@@ -387,9 +454,10 @@ internal sealed class MainForm : Form
         mainTabs = new TabControl { Dock = DockStyle.Fill };
         setupTab = BuildSetupTab();
         mainTabs.TabPages.Add(BuildRoutingTab());
-        mainTabs.TabPages.Add(BuildAxiomTab());
+        mainTabs.TabPages.Add(BuildLiveProgTab());
         mainTabs.TabPages.Add(BuildProfilesTab());
         mainTabs.TabPages.Add(BuildCoreEffectsTab());
+        mainTabs.TabPages.Add(BuildDarwinTab());
         mainTabs.TabPages.Add(BuildEqDynamicsTab());
         mainTabs.TabPages.Add(BuildFilesTab());
         mainTabs.TabPages.Add(BuildDiagnosticsTab());
@@ -642,8 +710,8 @@ internal sealed class MainForm : Form
         liveProgButtons.Controls.Add(Label("LiveProg script"));
         liveProgButtons.Controls.Add(Button("Load Low-Cut Test", (_, _) => LoadLowCutTest()));
         liveProgButtons.Controls.Add(Button("Load Pulse Test", (_, _) => LoadPulseGateTest()));
-        liveProgButtons.Controls.Add(Button("Restore Axiom EEL", (_, _) => RestoreAxiomLiveProg()));
-        liveProgButtons.Controls.Add(Button("Restore Axiom + Start", (_, _) => RestoreAxiomAndStart()));
+        liveProgButtons.Controls.Add(Button("Load Bundled Axiom Script", (_, _) => LoadBundledAxiomScript()));
+        liveProgButtons.Controls.Add(Button("Load Bundled Axiom + Start", (_, _) => LoadBundledAxiomAndStart()));
         panel.Controls.Add(liveProgButtons);
 
         var profileButtons = Row();
@@ -655,7 +723,7 @@ internal sealed class MainForm : Form
         panel.Controls.Add(profileButtons);
 
         panel.Controls.Add(NumberControl("General", "postGain", "Master post gain (dB)", -30, 12, 0.5m, 0));
-        panel.Controls.Add(CheckControl("LiveProg", "enabled", "Enable Axiom LiveProg", true));
+        panel.Controls.Add(CheckControl("LiveProg", "enabled", "Enable LiveProg", false));
 
         logBox = new TextBox
         {
@@ -672,17 +740,35 @@ internal sealed class MainForm : Form
         return page;
     }
 
-    private TabPage BuildAxiomTab()
+    private TabPage BuildLiveProgTab()
     {
-        var page = NewPage("Axiom");
+        var page = NewPage("LiveProg");
         var panel = NewStack();
         page.Controls.Add(panel);
-        panel.Controls.Add(Label("Axiom Clean R011 LiveProg controls. Changes write a runtime EEL copy and auto-reload the processor."));
-
-        foreach (var param in axiomParams)
+        liveProgNameLabel = new Label
         {
-            panel.Controls.Add(AxiomNumberControl(param));
-        }
+            AutoSize = true,
+            Font = new Font(Font.FontFamily, 11, FontStyle.Bold),
+            Text = "No LiveProg script selected"
+        };
+        liveProgStatusLabel = HealthLabel("Choose an EEL file in Files to load its controls.");
+        liveProgStatusLabel.MaximumSize = new Size(1050, 0);
+        resetLiveProgButton = Button("Reset Script Parameters", (_, _) => ResetLiveProgParameters());
+        resetLiveProgButton.Enabled = false;
+        liveProgControlsPanel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(0)
+        };
+        panel.Controls.Add(liveProgNameLabel);
+        panel.Controls.Add(liveProgStatusLabel);
+        panel.Controls.Add(Button("Reload Script", (_, _) => ReloadSelectedLiveProg()));
+        panel.Controls.Add(resetLiveProgButton);
+        panel.Controls.Add(liveProgControlsPanel);
+        ReloadLiveProgMetadata(useConfiguredValues: true);
         return page;
     }
 
@@ -702,6 +788,50 @@ internal sealed class MainForm : Form
         panel.Controls.Add(NumberControl("Tube", "gain", "Tube gain (dB)", 0, 24, 0.5m, 0));
         panel.Controls.Add(CheckControl("Crossfeed", "enabled", "Crossfeed", false));
         panel.Controls.Add(ComboControl("Crossfeed", "mode", "Crossfeed mode", new[] { "0 BS2B Lv1", "1 BS2B Lv2", "2 HRTF Crossfeed", "3 HRTF Surround1", "4 HRTF Surround2", "5 HRTF Surround3" }, 0));
+        return page;
+    }
+
+    private TabPage BuildDarwinTab()
+    {
+        var page = NewPage("Darwin");
+        var panel = NewStack();
+        page.Controls.Add(panel);
+        panel.Controls.Add(Label("Darwin filter packages combine a 256-tap filter with optional harmonic processing and automatic headroom."));
+        panel.Controls.Add(CheckControl("Darwin", "enabled", "Enable Darwin filter", false));
+        panel.Controls.Add(FileControl(
+            "Darwin",
+            "package",
+            "Darwin package",
+            "Darwin filter packages (*.zip;*.darwin)|*.zip;*.darwin|All files (*.*)|*.*"));
+
+        var filterRow = Row();
+        darwinFilterCombo = new ComboBox
+        {
+            Width = 420,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            DisplayMember = nameof(DarwinFilter.Title)
+        };
+        darwinFilterCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (suppressUiEvents || darwinFilterCombo.SelectedItem is not DarwinFilter filter) return;
+            SetValue("Darwin", "filter", filter.FileName);
+            PrepareDarwinImpulse(filter);
+            QueueSave();
+        };
+        filterRow.Controls.Add(Label("Filter"));
+        filterRow.Controls.Add(darwinFilterCombo);
+        filterRow.Controls.Add(Button("Reload Package", (_, _) =>
+        {
+            ReloadDarwinPackage();
+            QueueSave();
+        }));
+        panel.Controls.Add(filterRow);
+        panel.Controls.Add(NumberControl("Darwin", "harmonic", "Harmonic content (%)", 0, 100, 1, 0));
+        panel.Controls.Add(CheckControl("Darwin", "autoHeadroom", "Automatic headroom", true));
+        darwinStatusLabel = HealthLabel("Select a Darwin package.");
+        darwinStatusLabel.MaximumSize = new Size(1050, 0);
+        panel.Controls.Add(darwinStatusLabel);
+        ReloadDarwinPackage();
         return page;
     }
 
@@ -785,20 +915,6 @@ internal sealed class MainForm : Form
         return page;
     }
 
-    private Control AxiomNumberControl(AxiomParam param)
-    {
-        var box = NumberRow(param.Name, param.Min, param.Max, param.Step, axiomValues.GetValueOrDefault(param.Var, param.Default));
-        var input = (NumericUpDown)box.Tag!;
-        axiomControls[param.Var] = input;
-        input.ValueChanged += (_, _) =>
-        {
-            if (suppressUiEvents) return;
-            axiomValues[param.Var] = input.Value;
-            QueueSave();
-        };
-        return box;
-    }
-
     private Control NumberControl(string section, string key, string label, decimal min, decimal max, decimal step, decimal fallback)
     {
         var box = NumberRow(label, min, max, step, GetDecimal(section, key, fallback));
@@ -880,16 +996,35 @@ internal sealed class MainForm : Form
     {
         var row = Row();
         var text = new TextBox { Width = 620, Text = GetValue(section, key, "") };
-        if (section.Equals("LiveProg", StringComparison.OrdinalIgnoreCase) && key.Equals("file", StringComparison.OrdinalIgnoreCase))
+        var isLiveProgFile = section.Equals("LiveProg", StringComparison.OrdinalIgnoreCase)
+            && key.Equals("file", StringComparison.OrdinalIgnoreCase);
+        var isDarwinPackage = section.Equals("Darwin", StringComparison.OrdinalIgnoreCase)
+            && key.Equals("package", StringComparison.OrdinalIgnoreCase);
+        if (isLiveProgFile)
         {
             liveProgFileText = text;
+        }
+        if (isDarwinPackage)
+        {
+            darwinPackageText = text;
         }
         textControls[ConfigKey(section, key)] = text;
         text.TextChanged += (_, _) =>
         {
             if (suppressUiEvents) return;
-            SetValue(section, key, text.Text.Trim());
-            QueueSave();
+            if (isLiveProgFile)
+            {
+                SelectLiveProgFile(text.Text.Trim());
+            }
+            else if (isDarwinPackage)
+            {
+                SelectDarwinPackage(text.Text.Trim());
+            }
+            else
+            {
+                SetValue(section, key, text.Text.Trim());
+                QueueSave();
+            }
         };
         var browse = Button("Browse", (_, _) =>
         {
@@ -921,6 +1056,369 @@ internal sealed class MainForm : Form
         return row;
     }
 
+    private void SelectLiveProgFile(string path)
+    {
+        path = path.Trim();
+        if (PathsEqual(path, GetValue("LiveProg", "file", ""))) return;
+
+        SaveCurrentLiveProgValues();
+        SetValue("LiveProg", "file", path);
+        if (liveProgFileText is not null && !liveProgFileText.Text.Equals(path, StringComparison.Ordinal))
+        {
+            UpdateWithoutUiEvents(() => liveProgFileText.Text = path);
+        }
+        ClearLiveProgParameterConfig();
+        ReloadLiveProgMetadata(useConfiguredValues: false);
+        QueueSave();
+    }
+
+    private void SetLiveProgEnabled(bool enabled)
+    {
+        SetValue("LiveProg", "enabled", enabled ? "true" : "false");
+        if (checkControls.TryGetValue(ConfigKey("LiveProg", "enabled"), out var check))
+        {
+            UpdateWithoutUiEvents(() => check.Checked = enabled);
+        }
+    }
+
+    private void ReloadLiveProgMetadata(bool useConfiguredValues)
+    {
+        liveProgControlsPanel.Controls.Clear();
+        liveProgParameters.Clear();
+        liveProgValues.Clear();
+        resetLiveProgButton.Enabled = false;
+
+        var path = GetValue("LiveProg", "file", "").Trim();
+        activeLiveProgPath = ScriptKey(path);
+        if (path.Length == 0)
+        {
+            liveProgNameLabel.Text = "No LiveProg script selected";
+            liveProgStatusLabel.Text = "Choose an EEL file in Files to load its controls.";
+            ClearLiveProgParameterConfig();
+            return;
+        }
+        if (!File.Exists(path))
+        {
+            liveProgNameLabel.Text = Path.GetFileName(path);
+            liveProgStatusLabel.Text = "The selected EEL file does not exist.";
+            ClearLiveProgParameterConfig();
+            return;
+        }
+
+        LiveProgMetadata metadata;
+        try
+        {
+            metadata = LiveProgMetadataParser.Parse(File.ReadAllText(path));
+        }
+        catch (Exception exc)
+        {
+            liveProgNameLabel.Text = Path.GetFileName(path);
+            liveProgStatusLabel.Text = "The selected EEL file could not be read: " + exc.Message;
+            ClearLiveProgParameterConfig();
+            return;
+        }
+
+        var configuredValues = useConfiguredValues ? ConfiguredLiveProgValues() : new Dictionary<string, decimal>();
+        controllerState.LiveProgValues.TryGetValue(activeLiveProgPath, out var cachedValues);
+        ClearLiveProgParameterConfig();
+        var skipped = 0;
+        foreach (var parameter in metadata.Parameters)
+        {
+            if (!TryConvertParameter(parameter, out var minimum, out var maximum, out var step, out var initialValue))
+            {
+                skipped++;
+                continue;
+            }
+
+            var value = configuredValues.TryGetValue(parameter.Key, out var configured)
+                ? configured
+                : cachedValues is not null && cachedValues.TryGetValue(parameter.Key, out var cached)
+                    ? cached
+                    : initialValue;
+            value = Math.Clamp(value, minimum, maximum);
+            liveProgParameters.Add(parameter);
+            liveProgValues[parameter.Key] = value;
+            liveProgControlsPanel.Controls.Add(parameter.Options.Count > 0
+                ? LiveProgListControl(parameter, value)
+                : LiveProgNumberControl(parameter, minimum, maximum, step, value));
+        }
+
+        liveProgNameLabel.Text = string.IsNullOrWhiteSpace(metadata.Description)
+            ? Path.GetFileName(path)
+            : metadata.Description;
+        var tags = metadata.Tags.Count == 0 ? "" : " Tags: " + string.Join(", ", metadata.Tags) + ".";
+        liveProgStatusLabel.Text = liveProgParameters.Count == 0
+            ? "No customizable parameters were found." + (skipped == 0 ? "" : $" {skipped} unsupported declaration(s) were skipped.")
+            : $"{liveProgParameters.Count} parameter(s) loaded.{tags}" + (skipped == 0 ? "" : $" {skipped} unsupported declaration(s) were skipped.");
+        resetLiveProgButton.Enabled = liveProgParameters.Count > 0;
+        SaveCurrentLiveProgValues();
+        UpdateLiveProgParameters();
+    }
+
+    private Control LiveProgNumberControl(
+        LiveProgParameterMetadata parameter,
+        decimal minimum,
+        decimal maximum,
+        decimal step,
+        decimal value)
+    {
+        var row = Row();
+        var label = Label(string.IsNullOrWhiteSpace(parameter.Description) ? parameter.Key : parameter.Description);
+        var ticks = (int)Math.Clamp(
+            Math.Ceiling(((double)maximum - (double)minimum) / (double)step),
+            1d,
+            10_000d);
+        var slider = new TrackBar
+        {
+            Minimum = 0,
+            Maximum = ticks,
+            TickStyle = TickStyle.None,
+            Width = 440,
+            Value = TickForValue(value, minimum, maximum, ticks)
+        };
+        var number = new NumericUpDown
+        {
+            Minimum = minimum,
+            Maximum = maximum,
+            Increment = step,
+            DecimalPlaces = Math.Min(DecimalPlaces(step), 28),
+            Width = 130,
+            Value = value
+        };
+        var syncing = false;
+        slider.ValueChanged += (_, _) =>
+        {
+            if (syncing || suppressUiEvents) return;
+            syncing = true;
+            number.Value = SnapToStep(ValueForTick(slider.Value, minimum, maximum, ticks), minimum, maximum, step);
+            syncing = false;
+            SetLiveProgValue(parameter.Key, number.Value);
+        };
+        number.ValueChanged += (_, _) =>
+        {
+            if (syncing || suppressUiEvents) return;
+            syncing = true;
+            slider.Value = TickForValue(number.Value, minimum, maximum, ticks);
+            syncing = false;
+            SetLiveProgValue(parameter.Key, number.Value);
+        };
+        row.Controls.Add(label);
+        row.Controls.Add(slider);
+        row.Controls.Add(number);
+        return row;
+    }
+
+    private Control LiveProgListControl(LiveProgParameterMetadata parameter, decimal value)
+    {
+        var row = Row();
+        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
+        combo.Items.AddRange(parameter.Options.Cast<object>().ToArray());
+        combo.SelectedIndex = Math.Clamp(decimal.ToInt32(decimal.Truncate(value)), 0, combo.Items.Count - 1);
+        combo.SelectedIndexChanged += (_, _) =>
+        {
+            if (!suppressUiEvents && combo.SelectedIndex >= 0) SetLiveProgValue(parameter.Key, combo.SelectedIndex);
+        };
+        row.Controls.Add(Label(string.IsNullOrWhiteSpace(parameter.Description) ? parameter.Key : parameter.Description));
+        row.Controls.Add(combo);
+        return row;
+    }
+
+    private void SetLiveProgValue(string key, decimal value)
+    {
+        liveProgValues[key] = value;
+        QueueSave();
+    }
+
+    private void ResetLiveProgParameters()
+    {
+        if (activeLiveProgPath.Length == 0) return;
+        controllerState.LiveProgValues.Remove(activeLiveProgPath);
+        ClearLiveProgParameterConfig();
+        ReloadLiveProgMetadata(useConfiguredValues: false);
+        QueueSave();
+        AppendLog("LiveProg parameters reset to the script defaults.");
+    }
+
+    private void ReloadSelectedLiveProg()
+    {
+        var wasRunning = IsProcessorRunning();
+        ReloadLiveProgMetadata(useConfiguredValues: true);
+        SaveConfiguration();
+        AppendLog("Reloaded LiveProg metadata from the selected EEL file.");
+        if (wasRunning) StartProcessor();
+    }
+
+    private void SaveCurrentLiveProgValues()
+    {
+        if (activeLiveProgPath.Length == 0 || liveProgParameters.Count == 0) return;
+        controllerState.LiveProgValues[activeLiveProgPath] =
+            new Dictionary<string, decimal>(liveProgValues, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private Dictionary<string, decimal> ConfiguredLiveProgValues()
+    {
+        var result = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        if (!config.TryGetValue("LiveProg", out var values)) return result;
+        foreach (var (key, text) in values)
+        {
+            if (key.StartsWith("param.", StringComparison.OrdinalIgnoreCase)
+                && decimal.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+            {
+                result[key[6..]] = value;
+            }
+        }
+        return result;
+    }
+
+    private void ClearLiveProgParameterConfig()
+    {
+        if (!config.TryGetValue("LiveProg", out var values)) return;
+        foreach (var key in values.Keys.Where(key => key.StartsWith("param.", StringComparison.OrdinalIgnoreCase)).ToArray())
+        {
+            values.Remove(key);
+        }
+    }
+
+    private static bool TryConvertParameter(
+        LiveProgParameterMetadata parameter,
+        out decimal minimum,
+        out decimal maximum,
+        out decimal step,
+        out decimal initialValue)
+    {
+        try
+        {
+            minimum = Convert.ToDecimal(parameter.Minimum, CultureInfo.InvariantCulture);
+            maximum = Convert.ToDecimal(parameter.Maximum, CultureInfo.InvariantCulture);
+            step = Convert.ToDecimal(parameter.Step, CultureInfo.InvariantCulture);
+            _ = maximum - minimum;
+            var initial = parameter.InitialValue ?? Math.Clamp(0, parameter.Minimum, parameter.Maximum);
+            initialValue = Convert.ToDecimal(initial, CultureInfo.InvariantCulture);
+            return minimum < maximum && step > 0;
+        }
+        catch (OverflowException)
+        {
+            minimum = maximum = initialValue = 0;
+            step = 1;
+            return false;
+        }
+    }
+
+    private static decimal ValueForTick(int tick, decimal minimum, decimal maximum, int ticks)
+    {
+        return minimum + (maximum - minimum) * tick / ticks;
+    }
+
+    private static int TickForValue(decimal value, decimal minimum, decimal maximum, int ticks)
+    {
+        if (maximum == minimum) return 0;
+        return Math.Clamp((int)Math.Round((double)((value - minimum) / (maximum - minimum)) * ticks), 0, ticks);
+    }
+
+    private static decimal SnapToStep(decimal value, decimal minimum, decimal maximum, decimal step)
+    {
+        var steps = decimal.Round((value - minimum) / step, 0, MidpointRounding.AwayFromZero);
+        return Math.Clamp(minimum + steps * step, minimum, maximum);
+    }
+
+    private static string ScriptKey(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "";
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch
+        {
+            return path.Trim();
+        }
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        return ScriptKey(left).Equals(ScriptKey(right), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SelectDarwinPackage(string path)
+    {
+        path = path.Trim();
+        if (PathsEqual(path, GetValue("Darwin", "package", ""))) return;
+
+        SetValue("Darwin", "package", path);
+        SetValue("Darwin", "filter", "");
+        if (path.Length == 0) SetValue("Darwin", "impulseFile", "");
+        if (darwinPackageText is not null && !darwinPackageText.Text.Equals(path, StringComparison.Ordinal))
+        {
+            UpdateWithoutUiEvents(() => darwinPackageText.Text = path);
+        }
+        ReloadDarwinPackage();
+        QueueSave();
+    }
+
+    private void ReloadDarwinPackage()
+    {
+        var path = GetValue("Darwin", "package", "").Trim();
+        var wasSuppressed = suppressUiEvents;
+        suppressUiEvents = true;
+        try
+        {
+            darwinFilterCombo.Items.Clear();
+            if (path.Length == 0)
+            {
+                darwinStatusLabel.Text = "Select a Darwin package.";
+                SetValue("Darwin", "impulseFile", "");
+                return;
+            }
+            if (!File.Exists(path))
+            {
+                darwinStatusLabel.Text = "The selected Darwin package does not exist; the last valid filter remains active.";
+                return;
+            }
+
+            var filters = DarwinFilterPackage.List(path);
+            var selectedName = GetValue("Darwin", "filter", "");
+            darwinFilterCombo.Items.AddRange(filters.Cast<object>().ToArray());
+            var selectedIndex = filters.ToList().FindIndex(filter =>
+                filter.FileName.Equals(selectedName, StringComparison.Ordinal));
+            darwinFilterCombo.SelectedIndex = selectedIndex < 0 ? 0 : selectedIndex;
+            if (darwinFilterCombo.SelectedItem is DarwinFilter selected)
+            {
+                SetValue("Darwin", "filter", selected.FileName);
+                PrepareDarwinImpulse(selected);
+            }
+        }
+        catch (Exception exc)
+        {
+            darwinStatusLabel.Text = "Darwin package rejected; the last valid filter remains active: " + exc.Message;
+        }
+        finally
+        {
+            suppressUiEvents = wasSuppressed;
+        }
+    }
+
+    private void PrepareDarwinImpulse(DarwinFilter filter)
+    {
+        try
+        {
+            var package = GetValue("Darwin", "package", "");
+            var impulse = DarwinFilterPackage.Read(package, filter.FileName);
+            var path = Path.Combine(runtimeDir, $"darwin-{impulse.Crc:x8}.wav");
+            if (!File.Exists(path))
+            {
+                var tempPath = path + ".tmp";
+                DarwinFilterPackage.WriteFloatWave(tempPath, impulse.Samples);
+                File.Move(tempPath, path, true);
+            }
+            SetValue("Darwin", "impulseFile", path);
+            darwinStatusLabel.Text = $"Ready: {filter.Title}; 256 taps; CRC {impulse.Crc:x8}.";
+        }
+        catch (Exception exc)
+        {
+            darwinStatusLabel.Text = "Darwin filter rejected; the last valid filter remains active: " + exc.Message;
+        }
+    }
+
     private void StartProcessor(bool automaticRestart = false)
     {
         if (!automaticRestart)
@@ -936,7 +1434,7 @@ internal sealed class MainForm : Form
             AutoRouteListeningDevice(restartProcessor: false);
         }
         StopAllProcessors();
-        SaveConfigAndRuntimeEel();
+        SaveConfiguration();
         var capture = captureDevice.SelectedItem as DeviceInfo;
         var output = outputDevice.SelectedItem as DeviceInfo;
         var routeError = ValidateRoute(capture, output);
@@ -1024,7 +1522,8 @@ internal sealed class MainForm : Form
         processorStopRequested = true;
         processorRestartPending = false;
         processorRestartTimer.Stop();
-        foreach (var process in Process.GetProcessesByName("AxiomJamesDSPConsole"))
+        foreach (var process in new[] { "JamesDSPConsole", "AxiomJamesDSPConsole" }
+                     .SelectMany(Process.GetProcessesByName))
         {
             try
             {
@@ -1232,15 +1731,15 @@ internal sealed class MainForm : Form
         }
 
         var expected = captureDevice.SelectedItem as DeviceInfo;
-        var matchesAxiom = expected is not null && current.Id.Equals(expected.Id, StringComparison.OrdinalIgnoreCase);
-        if (controllerState.OwnsWindowsDefault && !matchesAxiom)
+        var matchesControllerRoute = expected is not null && current.Id.Equals(expected.Id, StringComparison.OrdinalIgnoreCase);
+        if (controllerState.OwnsWindowsDefault && !matchesControllerRoute)
         {
             controllerState.OwnsWindowsDefault = false;
             SaveControllerState();
-            SetRouteEvent("Windows default output changed outside Axiom; route ownership released.");
+            SetRouteEvent("Windows default output changed outside the controller; route ownership released.");
         }
-        windowsDefaultLabel.Text = $"Windows default: {current.Name}; Axiom ownership: {(controllerState.OwnsWindowsDefault ? "active" : "inactive")}";
-        windowsDefaultLabel.ForeColor = matchesAxiom ? Color.FromArgb(73, 217, 151) : Color.FromArgb(240, 170, 80);
+        windowsDefaultLabel.Text = $"Windows default: {current.Name}; controller ownership: {(controllerState.OwnsWindowsDefault ? "active" : "inactive")}";
+        windowsDefaultLabel.ForeColor = matchesControllerRoute ? Color.FromArgb(73, 217, 151) : Color.FromArgb(240, 170, 80);
     }
 
     private void RestorePreviousWindowsDefault()
@@ -1555,10 +2054,6 @@ internal sealed class MainForm : Form
             AppendLog("Processor executable is missing: " + consoleExe);
         }
 
-        if (!File.Exists(runtimeEelPath))
-        {
-            AppendLog("Runtime Axiom EEL will be generated on save: " + runtimeEelPath);
-        }
         RefreshSetupStatus();
     }
 
@@ -1576,10 +2071,9 @@ internal sealed class MainForm : Form
             suppressUiEvents = false;
         }
         UseVbCableToSelectedOutputRoute();
-        RestoreAxiomLiveProg();
         SaveControllerState();
         RefreshSetupStatus();
-        AppendLog("Recommended setup applied with VB-CABLE, selected physical output, Axiom LiveProg, and 200 ms resilient buffer.");
+        AppendLog("Recommended setup applied with VB-CABLE, the selected physical output, and the 200 ms resilient buffer.");
     }
 
     private void CompleteSetup()
@@ -1602,7 +2096,7 @@ internal sealed class MainForm : Form
     private void RefreshSetupStatus()
     {
         if (setupFilesLabel.IsDisposed) return;
-        var filesReady = File.Exists(consoleExe) && File.Exists(sourceEelPath)
+        var filesReady = File.Exists(consoleExe)
             && File.Exists(testLowCutEelPath) && File.Exists(testPulseGateEelPath);
         var cableReady = captureDevice.Items.Cast<object>()
             .OfType<DeviceInfo>()
@@ -1613,7 +2107,7 @@ internal sealed class MainForm : Form
         var profileReady = HasListeningProfile();
 
         SetSetupCheck(setupFilesLabel, "Application files", filesReady,
-            filesReady ? "ready" : "processor, accepted EEL, or test scripts missing");
+            filesReady ? "ready" : "processor or confidence-test scripts missing");
         SetSetupCheck(setupCableLabel, "VB-CABLE", cableReady,
             cableReady ? "detected" : "not detected");
         SetSetupCheck(setupRouteLabel, "Audio route", routeReady,
@@ -1633,7 +2127,6 @@ internal sealed class MainForm : Form
         var capture = captureDevice.SelectedItem as DeviceInfo;
         var output = outputDevice.SelectedItem as DeviceInfo;
         return File.Exists(consoleExe)
-            && File.Exists(sourceEelPath)
             && File.Exists(testLowCutEelPath)
             && File.Exists(testPulseGateEelPath)
             && captureDevice.Items.Cast<object>().OfType<DeviceInfo>().Any(IsVbCable)
@@ -1676,7 +2169,7 @@ internal sealed class MainForm : Form
         try
         {
             var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-            var shortcutPath = Path.Combine(desktop, "Axiom JamesDSP Controller.lnk");
+            var shortcutPath = Path.Combine(desktop, "JamesDSP Controller.lnk");
             var shellType = Type.GetTypeFromProgID("WScript.Shell")
                 ?? throw new InvalidOperationException("Windows Script Host is unavailable.");
             dynamic shell = Activator.CreateInstance(shellType)
@@ -1684,7 +2177,7 @@ internal sealed class MainForm : Form
             dynamic shortcut = shell.CreateShortcut(shortcutPath);
             shortcut.TargetPath = Application.ExecutablePath;
             shortcut.WorkingDirectory = paths.AppRoot;
-            shortcut.Description = "Axiom JamesDSP Controller";
+            shortcut.Description = "JamesDSP Controller";
             shortcut.IconLocation = Application.ExecutablePath;
             shortcut.Save();
             AppendLog("Desktop shortcut created: " + shortcutPath);
@@ -1698,7 +2191,7 @@ internal sealed class MainForm : Form
     private void InitializeTrayIcon()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Open Axiom", null, (_, _) => RestoreFromTray());
+        menu.Items.Add("Open JamesDSP Controller", null, (_, _) => RestoreFromTray());
         menu.Items.Add("Start Processor", null, (_, _) => StartProcessor());
         menu.Items.Add("Stop Processor", null, (_, _) => StopProcessor());
         menu.Items.Add(new ToolStripSeparator());
@@ -1709,7 +2202,7 @@ internal sealed class MainForm : Form
         });
         trayIcon = new NotifyIcon
         {
-            Text = "Axiom JamesDSP Controller",
+            Text = "JamesDSP Controller",
             Icon = appIcon,
             ContextMenuStrip = menu,
             Visible = false
@@ -1748,10 +2241,11 @@ internal sealed class MainForm : Form
     private void ConfigureWindowsStartup(bool enabled)
     {
         const string keyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-        const string valueName = "AxiomJamesDSPController";
+        const string valueName = "JamesDSPController";
         try
         {
             using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(keyPath);
+            key?.DeleteValue("AxiomJamesDSPController", false);
             if (enabled)
             {
                 key?.SetValue(valueName, Quote(Application.ExecutablePath));
@@ -1774,6 +2268,9 @@ internal sealed class MainForm : Form
         Directory.CreateDirectory(profileDir);
         Directory.CreateDirectory(diagnosticsDir);
 
+        CopyIfMissing(Path.Combine(paths.DataRoot, "axiom-liveprog-test.ini"), configPath);
+        CopyIfMissing(Path.Combine(paths.HarnessRoot, "jamesdsp-controller.ini"), configPath);
+        CopyIfMissing(Path.Combine(paths.HarnessRoot, "package-default.ini"), configPath);
         CopyIfMissing(Path.Combine(paths.HarnessRoot, "axiom-liveprog-test.ini"), configPath);
         CopyIfMissing(Path.Combine(paths.HarnessRoot, "runtime", "axiom-test-lowcut.eel"), testLowCutEelPath);
         CopyIfMissing(Path.Combine(paths.HarnessRoot, "runtime", "axiom-test-pulse-gate.eel"), testPulseGateEelPath);
@@ -1823,6 +2320,12 @@ internal sealed class MainForm : Form
             {
                 controllerState = JsonSerializer.Deserialize<ControllerState>(File.ReadAllText(statePath)) ?? new ControllerState();
             }
+            var restoredValues = new Dictionary<string, Dictionary<string, decimal>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (path, values) in controllerState.LiveProgValues ?? new())
+            {
+                restoredValues[path] = new Dictionary<string, decimal>(values, StringComparer.OrdinalIgnoreCase);
+            }
+            controllerState.LiveProgValues = restoredValues;
         }
         catch
         {
@@ -1830,68 +2333,30 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void LoadAxiomParams()
+    private void SaveConfiguration()
     {
-        if (!File.Exists(sourceEelPath))
-        {
-            throw new FileNotFoundException(
-                "The accepted Axiom EEL resource could not be located. Set AXIOM_ACCEPTED_EEL or reinstall the application package.",
-                sourceEelPath);
-        }
-        var source = File.ReadAllText(sourceEelPath);
-        var regex = new Regex(@"^(?<var>slider\d+):(?<def>-?\d+(?:\.\d+)?)<(?<min>-?\d+(?:\.\d+)?),(?<max>-?\d+(?:\.\d+)?),(?<step>-?\d+(?:\.\d+)?)>(?<name>.+)$", RegexOptions.Multiline);
-        foreach (Match match in regex.Matches(source))
-        {
-            var param = new AxiomParam(
-                match.Groups["var"].Value,
-                match.Groups["name"].Value.Trim(),
-                Decimal(match.Groups["def"].Value),
-                Decimal(match.Groups["min"].Value),
-                Decimal(match.Groups["max"].Value),
-                Decimal(match.Groups["step"].Value));
-            axiomParams.Add(param);
-            axiomValues[param.Var] = param.Default;
-        }
-    }
-
-    private void LoadRuntimeAxiomValues()
-    {
-        if (!File.Exists(runtimeEelPath)) return;
-        try
-        {
-            var runtime = File.ReadAllText(runtimeEelPath);
-            foreach (var param in axiomParams)
-            {
-                var match = Regex.Match(
-                    runtime,
-                    $@"(?m)^{Regex.Escape(param.Var)}:(?<value>-?\d+(?:\.\d+)?)<");
-                if (match.Success)
-                {
-                    axiomValues[param.Var] = Decimal(match.Groups["value"].Value);
-                }
-            }
-        }
-        catch (Exception exc)
-        {
-            AppendLog("Existing runtime Axiom values could not be restored: " + exc.Message);
-        }
-    }
-
-    private void SaveConfigAndRuntimeEel(bool selectAxiomRuntime = false)
-    {
-        Directory.CreateDirectory(runtimeDir);
-        WriteTextIfChanged(runtimeEelPath, BuildRuntimeEel());
-        var currentLiveProg = GetValue("LiveProg", "file", "");
-        if (selectAxiomRuntime || string.IsNullOrWhiteSpace(currentLiveProg))
-        {
-            SetValue("LiveProg", "file", runtimeEelPath);
-        }
+        SaveCurrentLiveProgValues();
         UpdateLiveProgParameters();
         if (liveProgFileText is not null && liveProgFileText.Text != GetValue("LiveProg", "file", ""))
         {
-            liveProgFileText.Text = GetValue("LiveProg", "file", "");
+            UpdateWithoutUiEvents(() => liveProgFileText.Text = GetValue("LiveProg", "file", ""));
         }
         WriteTextIfChanged(configPath, BuildConfigText());
+        SaveControllerState();
+    }
+
+    private void UpdateWithoutUiEvents(Action update)
+    {
+        var wasSuppressed = suppressUiEvents;
+        suppressUiEvents = true;
+        try
+        {
+            update();
+        }
+        finally
+        {
+            suppressUiEvents = wasSuppressed;
+        }
     }
 
     private void UpdateLiveProgParameters()
@@ -1901,16 +2366,12 @@ internal sealed class MainForm : Form
             values = new(StringComparer.OrdinalIgnoreCase);
             config["LiveProg"] = values;
         }
-        foreach (var key in values.Keys.Where(key => key.StartsWith("param.", StringComparison.OrdinalIgnoreCase)).ToArray())
+        ClearLiveProgParameterConfig();
+        if (!PathsEqual(GetValue("LiveProg", "file", ""), activeLiveProgPath)) return;
+        foreach (var parameter in liveProgParameters)
         {
-            values.Remove(key);
-        }
-
-        var selectedPath = GetValue("LiveProg", "file", "");
-        if (!Path.GetFullPath(selectedPath).Equals(Path.GetFullPath(runtimeEelPath), StringComparison.OrdinalIgnoreCase)) return;
-        foreach (var param in axiomParams)
-        {
-            values["param." + param.Var] = axiomValues.GetValueOrDefault(param.Var, param.Default)
+            if (!liveProgValues.TryGetValue(parameter.Key, out var value)) continue;
+            values["param." + parameter.Key] = value
                 .ToString(CultureInfo.InvariantCulture);
         }
     }
@@ -1918,7 +2379,20 @@ internal sealed class MainForm : Form
     private static void WriteTextIfChanged(string path, string content)
     {
         if (File.Exists(path) && File.ReadAllText(path).Equals(content, StringComparison.Ordinal)) return;
-        File.WriteAllText(path, content, Encoding.UTF8);
+        var tempPath = path + ".tmp";
+        File.WriteAllText(tempPath, content, Encoding.UTF8);
+        try
+        {
+            File.Move(tempPath, path, true);
+        }
+        catch (IOException)
+        {
+            File.WriteAllText(path, content, Encoding.UTF8);
+        }
+        finally
+        {
+            if (File.Exists(tempPath)) File.Delete(tempPath);
+        }
     }
 
     private void LoadLowCutTest()
@@ -1944,24 +2418,35 @@ internal sealed class MainForm : Form
             AppendLog($"{label} test script validation failed: {validationError}");
             return;
         }
-        SetValue("LiveProg", "enabled", "true");
-        SetValue("LiveProg", "file", path);
-        if (liveProgFileText is not null) liveProgFileText.Text = path;
-        File.WriteAllText(configPath, BuildConfigText(), Encoding.UTF8);
-        AppendLog($"Loaded {label} LiveProg test script. Use this to confirm that Axiom/JamesDSP is audibly in the path.");
+        SetLiveProgEnabled(true);
+        SelectLiveProgFile(path);
+        SaveConfiguration();
+        AppendLog($"Loaded {label} LiveProg test script. Use this to confirm that JamesDSP is audibly in the path.");
         StartProcessorIfReady($"{label} confidence test");
     }
 
-    private void RestoreAxiomLiveProg()
+    private void LoadBundledAxiomScript()
     {
-        SaveConfigAndRuntimeEel(selectAxiomRuntime: true);
-        AppendLog("Restored generated Axiom LiveProg script.");
+        if (!File.Exists(bundledEelPath))
+        {
+            AppendLog("The bundled Axiom EEL script is not installed: " + bundledEelPath);
+            return;
+        }
+        SetLiveProgEnabled(true);
+        SelectLiveProgFile(bundledEelPath);
+        SaveConfiguration();
+        AppendLog("Loaded the bundled Axiom LiveProg script without modifying its source.");
     }
 
-    private void RestoreAxiomAndStart()
+    private void LoadBundledAxiomAndStart()
     {
-        RestoreAxiomLiveProg();
-        StartProcessorIfReady("Axiom restore");
+        if (!File.Exists(bundledEelPath))
+        {
+            AppendLog("The bundled Axiom EEL script is not installed: " + bundledEelPath);
+            return;
+        }
+        LoadBundledAxiomScript();
+        StartProcessorIfReady("bundled Axiom script");
     }
 
     private void StartProcessorIfReady(string reason)
@@ -1981,7 +2466,7 @@ internal sealed class MainForm : Form
     private void SaveProfile(string type)
     {
         Directory.CreateDirectory(profileDir);
-        var profile = CaptureProfile(type == "listening" ? "Axiom Listening Profile" : "Axiom Profile", type);
+        var profile = CaptureProfile(type == "listening" ? "JamesDSP Listening Profile" : "JamesDSP Profile", type);
         var path = ProfilePath(type);
         WriteProfile(path, profile);
         lastProfileName = profile.Name;
@@ -1995,6 +2480,7 @@ internal sealed class MainForm : Form
     private void LoadProfile(string type)
     {
         var path = ProfilePath(type);
+        if (!File.Exists(path)) path = LegacyProfilePath(type);
         if (!File.Exists(path))
         {
             AppendLog($"{type} profile does not exist yet: {path}");
@@ -2076,7 +2562,6 @@ internal sealed class MainForm : Form
         var profile = CaptureProfile(name, "listening");
         WriteProfile(path, profile);
         lastProfileName = profile.Name;
-        profileDirty = false;
         profileDirty = false;
         AppendLog("Saved new profile: " + path);
         RefreshProfileList(path);
@@ -2186,7 +2671,7 @@ internal sealed class MainForm : Form
 
     private void ImportProfile()
     {
-        using var dialog = new OpenFileDialog { Filter = "Axiom profiles (*.json)|*.json|All files (*.*)|*.*" };
+        using var dialog = new OpenFileDialog { Filter = "JamesDSP profiles (*.json)|*.json|All files (*.*)|*.*" };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         try
         {
@@ -2210,7 +2695,7 @@ internal sealed class MainForm : Form
         if (profileSelector.SelectedItem is not ProfileListItem item) return;
         using var dialog = new SaveFileDialog
         {
-            Filter = "Axiom profiles (*.json)|*.json",
+            Filter = "JamesDSP profiles (*.json)|*.json",
             FileName = SanitizeFileName(item.Name) + ".json"
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
@@ -2218,12 +2703,12 @@ internal sealed class MainForm : Form
         AppendLog("Exported profile: " + dialog.FileName);
     }
 
-    private AxiomProfile ReadProfile(string path)
+    private ControllerProfile ReadProfile(string path)
     {
-        var profile = JsonSerializer.Deserialize<AxiomProfile>(File.ReadAllText(path))
+        var profile = JsonSerializer.Deserialize<ControllerProfile>(File.ReadAllText(path))
             ?? throw new InvalidDataException("Profile JSON did not contain an object.");
         profile.Config ??= new(StringComparer.OrdinalIgnoreCase);
-        profile.AxiomValues ??= new(StringComparer.OrdinalIgnoreCase);
+        profile.LegacyAxiomValues ??= new(StringComparer.OrdinalIgnoreCase);
         NormalizePortableProfilePaths(profile);
         return profile;
     }
@@ -2237,7 +2722,7 @@ internal sealed class MainForm : Form
     {
         var invalid = Path.GetInvalidFileNameChars();
         var cleaned = new string(value.Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray()).Trim();
-        return string.IsNullOrWhiteSpace(cleaned) ? "axiom-profile" : cleaned;
+        return string.IsNullOrWhiteSpace(cleaned) ? "jamesdsp-profile" : cleaned;
     }
 
     private void UpdateProfileManagerStatus()
@@ -2251,24 +2736,35 @@ internal sealed class MainForm : Form
 
     private void LoadQualificationBaseline()
     {
+        if (!File.Exists(bundledEelPath))
+        {
+            AppendLog("The bundled Axiom qualification script is missing: " + bundledEelPath);
+            return;
+        }
+
+        SetLiveProgEnabled(true);
+        SelectLiveProgFile(bundledEelPath);
+        controllerState.LiveProgValues.Remove(ScriptKey(bundledEelPath));
+        ClearLiveProgParameterConfig();
+        ReloadLiveProgMetadata(useConfiguredValues: false);
+
         var profile = CaptureProfile("Axiom Qualification Baseline", "qualification");
         profile.BufferMs = 200;
-        foreach (var section in new[] { "BassBoost", "StereoWide", "Reverb", "Tube", "Compressor", "Equalizer", "Crossfeed", "DDC", "Convolver" })
+        foreach (var section in new[] { "BassBoost", "StereoWide", "Reverb", "Tube", "Compressor", "Equalizer", "Crossfeed", "DDC", "Convolver", "Darwin" })
         {
             SetProfileValue(profile, section, "enabled", "false");
         }
         SetProfileValue(profile, "General", "postGain", "0");
         SetProfileValue(profile, "Crossfeed", "mode", "0");
         SetProfileValue(profile, "LiveProg", "enabled", "true");
-        SetProfileValue(profile, "LiveProg", "file", runtimeEelPath);
-        profile.LiveProgFile = runtimeEelPath;
+        SetProfileValue(profile, "LiveProg", "file", bundledEelPath);
+        profile.LiveProgFile = bundledEelPath;
         profile.LiveProgEnabled = true;
         profile.PostGain = 0;
         profile.CrossfeedEnabled = false;
         profile.CrossfeedMode = 0;
-        profile.AxiomValues = axiomParams.ToDictionary(param => param.Var, param => param.Default, StringComparer.OrdinalIgnoreCase);
         ApplyProfile(profile);
-        SaveConfigAndRuntimeEel(selectAxiomRuntime: true);
+        SaveConfiguration();
         lastProfileName = profile.Name;
         Directory.CreateDirectory(profileDir);
         WriteProfile(ProfilePath("qualification"), profile);
@@ -2276,11 +2772,13 @@ internal sealed class MainForm : Form
         UpdateStatus();
     }
 
-    private AxiomProfile CaptureProfile(string name, string type)
+    private ControllerProfile CaptureProfile(string name, string type)
     {
-        return new AxiomProfile
+        SaveCurrentLiveProgValues();
+        UpdateLiveProgParameters();
+        return new ControllerProfile
         {
-            SchemaVersion = 2,
+            SchemaVersion = 3,
             Name = name,
             Type = type,
             SavedAtUtc = DateTime.UtcNow,
@@ -2290,17 +2788,17 @@ internal sealed class MainForm : Form
             OutputId = (outputDevice.SelectedItem as DeviceInfo)?.Id ?? controllerState.OutputId,
             BufferMs = controllerState.BufferMs,
             LiveProgFile = GetValue("LiveProg", "file", ""),
-            LiveProgEnabled = GetBool("LiveProg", "enabled", true),
+            LiveProgEnabled = GetBool("LiveProg", "enabled", false),
             PostGain = GetDecimal("General", "postGain", 0),
             CrossfeedEnabled = GetBool("Crossfeed", "enabled", false),
             CrossfeedMode = GetInt("Crossfeed", "mode", 0),
-            Config = CloneConfig(config),
-            AxiomValues = new Dictionary<string, decimal>(axiomValues, StringComparer.OrdinalIgnoreCase)
+            Config = CloneConfig(config)
         };
     }
 
-    private void ApplyProfile(AxiomProfile profile)
+    private void ApplyProfile(ControllerProfile profile)
     {
+        SaveCurrentLiveProgValues();
         suppressUiEvents = true;
         try
         {
@@ -2315,27 +2813,33 @@ internal sealed class MainForm : Form
             else
             {
                 SetValue("LiveProg", "enabled", profile.LiveProgEnabled ? "true" : "false");
-                SetValue("LiveProg", "file", string.IsNullOrWhiteSpace(profile.LiveProgFile) ? runtimeEelPath : profile.LiveProgFile);
+                SetValue("LiveProg", "file", profile.LiveProgFile);
                 SetValue("General", "postGain", profile.PostGain.ToString(CultureInfo.InvariantCulture));
                 SetValue("Crossfeed", "enabled", profile.CrossfeedEnabled ? "true" : "false");
                 SetValue("Crossfeed", "mode", profile.CrossfeedMode.ToString(CultureInfo.InvariantCulture));
             }
-            if (profile.AxiomValues.Count > 0)
+            if (profile.LegacyAxiomValues is { Count: > 0 })
             {
-                foreach (var param in axiomParams)
+                if (!config.TryGetValue("LiveProg", out var liveProg))
                 {
-                    axiomValues[param.Var] = profile.AxiomValues.TryGetValue(param.Var, out var value) ? value : param.Default;
+                    liveProg = new(StringComparer.OrdinalIgnoreCase);
+                    config["LiveProg"] = liveProg;
+                }
+                foreach (var (key, value) in profile.LegacyAxiomValues)
+                {
+                    liveProg["param." + key] = value.ToString(CultureInfo.InvariantCulture);
                 }
             }
             RefreshConfigControls();
-            RefreshAxiomControls();
+            ReloadLiveProgMetadata(useConfiguredValues: true);
+            ReloadDarwinPackage();
         }
         finally
         {
             suppressUiEvents = false;
         }
         SaveSelectedRoute();
-        SaveConfigAndRuntimeEel();
+        SaveConfiguration();
         profileDirty = false;
         UpdateProfileManagerStatus();
     }
@@ -2367,7 +2871,9 @@ internal sealed class MainForm : Form
         }
     }
 
-    private string ProfilePath(string type) => Path.Combine(profileDir, $"axiom-{type}-profile.json");
+    private string ProfilePath(string type) => Path.Combine(profileDir, $"jamesdsp-{type}-profile.json");
+
+    private string LegacyProfilePath(string type) => Path.Combine(profileDir, $"axiom-{type}-profile.json");
 
     private static Dictionary<string, Dictionary<string, string>> CloneConfig(
         Dictionary<string, Dictionary<string, string>> source)
@@ -2389,7 +2895,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static void SetProfileValue(AxiomProfile profile, string section, string key, string value)
+    private static void SetProfileValue(ControllerProfile profile, string section, string key, string value)
     {
         if (!profile.Config.TryGetValue(section, out var values))
         {
@@ -2399,7 +2905,7 @@ internal sealed class MainForm : Form
         values[key] = value;
     }
 
-    private static void WriteProfile(string path, AxiomProfile profile)
+    private static void WriteProfile(string path, ControllerProfile profile)
     {
         var tempPath = path + ".tmp";
         File.WriteAllText(tempPath, JsonSerializer.Serialize(profile, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
@@ -2412,7 +2918,7 @@ internal sealed class MainForm : Form
         SetValue("LiveProg", "file", ResolvePortableLiveProgPath(configured));
     }
 
-    private void NormalizePortableProfilePaths(AxiomProfile profile)
+    private void NormalizePortableProfilePaths(ControllerProfile profile)
     {
         profile.LiveProgFile = ResolvePortableLiveProgPath(profile.LiveProgFile);
         if (profile.Config.TryGetValue("LiveProg", out var liveProg)
@@ -2424,9 +2930,10 @@ internal sealed class MainForm : Form
 
     private string ResolvePortableLiveProgPath(string configured)
     {
+        if (string.IsNullOrWhiteSpace(configured)) return "";
         if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured)) return configured;
 
-        var fileName = string.IsNullOrWhiteSpace(configured) ? "" : Path.GetFileName(configured);
+        var fileName = Path.GetFileName(configured);
         if (!string.IsNullOrWhiteSpace(fileName))
         {
             var dataCandidate = Path.Combine(runtimeDir, fileName);
@@ -2439,26 +2946,22 @@ internal sealed class MainForm : Form
                 if (File.Exists(dataCandidate)) return dataCandidate;
                 return harnessCandidate;
             }
+            if ((fileName.Equals(Path.GetFileName(legacyRuntimeEelPath), StringComparison.OrdinalIgnoreCase)
+                    || fileName.Equals(Path.GetFileName(bundledEelPath), StringComparison.OrdinalIgnoreCase))
+                && File.Exists(bundledEelPath))
+            {
+                return bundledEelPath;
+            }
         }
 
-        return runtimeEelPath;
-    }
-
-    private void RefreshAxiomControls()
-    {
-        foreach (var param in axiomParams)
-        {
-            if (!axiomControls.TryGetValue(param.Var, out var input)) continue;
-            var value = axiomValues.GetValueOrDefault(param.Var, param.Default);
-            input.Value = Math.Clamp(value, input.Minimum, input.Maximum);
-        }
+        return configured;
     }
 
     private void ExportDiagnosticReport()
     {
         Directory.CreateDirectory(diagnosticsDir);
         var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-        var path = Path.Combine(diagnosticsDir, $"axiom-diagnostics-{stamp}.txt");
+        var path = Path.Combine(diagnosticsDir, $"jamesdsp-diagnostics-{stamp}.txt");
         var report = BuildDiagnosticReport();
         File.WriteAllText(path, report, Encoding.UTF8);
         diagnosticsBox.Text = report;
@@ -2554,7 +3057,7 @@ internal sealed class MainForm : Form
             Directory.CreateDirectory(diagnosticsDir);
             var path = Path.Combine(diagnosticsDir, $"session-summary-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
             var summary = new StringBuilder()
-                .AppendLine("Axiom JamesDSP Controller Session Summary")
+                .AppendLine("JamesDSP Controller Session Summary")
                 .AppendLine("Started: " + sessionStartedAt.ToString("O", CultureInfo.InvariantCulture))
                 .AppendLine("Ended: " + DateTime.Now.ToString("O", CultureInfo.InvariantCulture))
                 .AppendLine("Profile: " + lastProfileName)
@@ -2575,7 +3078,7 @@ internal sealed class MainForm : Form
         var capture = captureDevice.SelectedItem as DeviceInfo;
         var output = outputDevice.SelectedItem as DeviceInfo;
         var sb = new StringBuilder();
-        sb.AppendLine("Axiom JamesDSP Controller Diagnostic Report");
+        sb.AppendLine("JamesDSP Controller Diagnostic Report");
         sb.AppendLine("Generated: " + DateTime.Now.ToString("O", CultureInfo.InvariantCulture));
         sb.AppendLine();
         sb.AppendLine("Route");
@@ -2594,9 +3097,12 @@ internal sealed class MainForm : Form
         sb.AppendLine("  Command: " + lastProcessorCommand);
         sb.AppendLine();
         sb.AppendLine("Script");
-        sb.AppendLine("  LiveProg enabled: " + GetBool("LiveProg", "enabled", true));
+        sb.AppendLine("  LiveProg enabled: " + GetBool("LiveProg", "enabled", false));
         sb.AppendLine("  LiveProg file: " + GetValue("LiveProg", "file", ""));
         sb.AppendLine("  Validation: " + (ValidateLiveProgScript(GetValue("LiveProg", "file", "")) ?? "ok"));
+        sb.AppendLine("  Darwin enabled: " + GetBool("Darwin", "enabled", false));
+        sb.AppendLine("  Darwin package: " + GetValue("Darwin", "package", ""));
+        sb.AppendLine("  Darwin filter: " + GetValue("Darwin", "filter", ""));
         sb.AppendLine();
         sb.AppendLine("Profile");
         sb.AppendLine("  Current: " + lastProfileName);
@@ -2617,23 +3123,11 @@ internal sealed class MainForm : Form
         return sb.ToString();
     }
 
-    private string BuildRuntimeEel()
-    {
-        var text = File.ReadAllText(sourceEelPath);
-        foreach (var (varName, value) in axiomValues)
-        {
-            var formatted = value.ToString(CultureInfo.InvariantCulture);
-            text = Regex.Replace(text, $@"^{Regex.Escape(varName)}:(-?\d+(?:\.\d+)?)(<)", $"{varName}:{formatted}$2", RegexOptions.Multiline);
-            text = Regex.Replace(text, $@"\b{Regex.Escape(varName)}\s*=\s*-?\d+(?:\.\d+)?\s*;", $"{varName} = {formatted};", RegexOptions.Multiline);
-        }
-        return text;
-    }
-
     private string BuildConfigText()
     {
-        string[] sections = { "General", "BassBoost", "StereoWide", "Reverb", "Tube", "Compressor", "Equalizer", "Crossfeed", "DDC", "Convolver", "LiveProg" };
+        string[] sections = { "General", "BassBoost", "StereoWide", "Reverb", "Tube", "Compressor", "Equalizer", "Crossfeed", "DDC", "Convolver", "LiveProg", "Darwin" };
         var sb = new StringBuilder();
-        sb.AppendLine("; Generated by Axiom JamesDSP Controller.");
+        sb.AppendLine("; Generated by JamesDSP Controller.");
         sb.AppendLine();
         foreach (var section in sections)
         {
@@ -2722,7 +3216,9 @@ internal sealed class MainForm : Form
 
     private static int CountRunningProcessors()
     {
-        var processes = Process.GetProcessesByName("AxiomJamesDSPConsole");
+        var processes = new[] { "JamesDSPConsole", "AxiomJamesDSPConsole" }
+            .SelectMany(Process.GetProcessesByName)
+            .ToArray();
         var count = processes.Length;
         foreach (var process in processes) process.Dispose();
         return count;
@@ -2891,12 +3387,12 @@ internal sealed class MainForm : Form
         if (error is not null) return "Needs attention: " + error;
         if (IsVbCable(capture)) return "Recommended v1 route: VB-CABLE source into selected real output.";
         if (IsSteamRoute(capture)) return "Working fallback route: Steam source is usable, but VB-CABLE is the v1 target.";
-        return "Route is valid but not recognized as a preferred Axiom source.";
+        return "Route is valid but not recognized as a preferred JamesDSP source.";
     }
 
     private string? ValidateLiveProgScript(string path, bool requireUiDefaults = false)
     {
-        if (!GetBool("LiveProg", "enabled", true)) return null;
+        if (!GetBool("LiveProg", "enabled", false)) return null;
         if (string.IsNullOrWhiteSpace(path)) return "LiveProg is enabled but no EEL file is selected.";
         if (!File.Exists(path)) return "LiveProg file is missing: " + path;
 
@@ -2911,7 +3407,7 @@ internal sealed class MainForm : Form
         }
 
         if (string.IsNullOrWhiteSpace(text)) return "LiveProg file is empty: " + path;
-        if (!Regex.IsMatch(text, @"(?m)^@init\b")) return "LiveProg file is missing @init: " + path;
+        if (!Regex.IsMatch(text, @"(?m)^\s*@sample\b")) return "LiveProg file is missing required @sample section: " + path;
         if (requireUiDefaults && !text.Contains("// UI Defaults", StringComparison.OrdinalIgnoreCase))
         {
             return "test scripts must include a // UI Defaults block in @init.";
@@ -2981,12 +3477,12 @@ internal sealed class MainForm : Form
         if (runningCount == 1)
         {
             if (!string.IsNullOrWhiteSpace(processorFailureState)) return "Route state: Recovered - " + processorFailureState;
-            return "Route state: Processing - audio is routed through Axiom";
+            return "Route state: Processing - audio is routed through JamesDSP";
         }
         if (!string.IsNullOrWhiteSpace(processorFailureState)) return "Route state: Needs action - " + processorFailureState;
         if (routeError is not null) return "Route state: Needs action - " + routeError;
         if (scriptError is not null) return "Route state: Needs action - " + scriptError;
-        return "Route state: Ready - click Start Processor to hear Axiom";
+        return "Route state: Ready - click Start Processor to hear JamesDSP";
     }
 
     private Color RouteStateColor(int runningCount, string? routeError, string? scriptError)

@@ -5,7 +5,7 @@
  * Replicates Linux JamesDSP functionality.
  * 
  * Usage:
- *   JamesDSP-Console.exe [-i <capture_device_index>] [-o <device_index>] [-c <config_file>]
+ *   JamesDSPConsole.exe [-i <capture_device_index>] [-o <device_index>] [-c <config_file>]
  * 
  * Keys:
  *   R - Reload configuration from file
@@ -312,7 +312,7 @@ bool initDsp(int sampleRate, int blockSize) {
     JamesDSPGlobalMemoryAllocation();
     JamesDSPInit(g_dsp, blockSize, static_cast<float>(sampleRate));
     
-    g_controller = new DspController(g_dsp, sampleRate);
+    g_controller = new DspController(g_dsp, sampleRate, blockSize);
     
     std::cout << "[INFO] JamesDSP initialized @ " << sampleRate << " Hz, block size: " << blockSize << std::endl;
     return true;
@@ -653,7 +653,7 @@ void PrintUsage() {
     std::cout << "\n========================================" << std::endl;
     std::cout << "   JamesDSP for Windows" << std::endl;
     std::cout << "========================================\n" << std::endl;
-    std::cout << "Usage: JamesDSP-Console.exe [-i <capture_device>] [-o <device>] [-c <config>]\n" << std::endl;
+    std::cout << "Usage: JamesDSPConsole.exe [-i <capture_device>] [-o <device>] [-c <config>]\n" << std::endl;
     std::cout << "Setup:" << std::endl;
     std::cout << "  1. Route the player/browser to the capture/source endpoint" << std::endl;
     std::cout << "  2. Run this program with -o to select the real output" << std::endl;
@@ -683,6 +683,7 @@ void AudioProcessingLoop(IMMDevice* captureDevice, IMMDevice* renderDevice) {
     std::thread* kbThread = nullptr;
     std::vector<float> captureFloat;
     std::vector<float> dspFloat;
+    std::vector<float> resampledDspFloat;
     std::vector<float> renderFloat;
     
     HRESULT hr;
@@ -952,10 +953,10 @@ void AudioProcessingLoop(IMMDevice* captureDevice, IMMDevice* renderDevice) {
                                 conversionErrors += 1;
                                 memset(renderData, 0, toWrite * renderFormat->nBlockAlign);
                             } else {
-                                AdaptChannels(captureFloat, numFrames, captureFormat->nChannels, renderFormat->nChannels, dspFloat);
-                                if (g_dsp && g_dsp->processFloatMultiplexd) {
+                                AdaptChannels(captureFloat, numFrames, captureFormat->nChannels, 2, dspFloat);
+                                if (g_controller) {
                                     auto dspStart = std::chrono::steady_clock::now();
-                                    g_dsp->processFloatMultiplexd(g_dsp, dspFloat.data(), dspFloat.data(), numFrames);
+                                    g_controller->process(dspFloat.data(), numFrames);
                                     auto dspEnd = std::chrono::steady_clock::now();
                                     uint64_t dspMicros = static_cast<uint64_t>(
                                         std::chrono::duration_cast<std::chrono::microseconds>(dspEnd - dspStart).count());
@@ -970,7 +971,8 @@ void AudioProcessingLoop(IMMDevice* captureDevice, IMMDevice* renderDevice) {
                                         dspCriticalStalls += 1;
                                     }
                                 }
-                                ResampleInterleaved(dspFloat, numFrames, toWrite, renderFormat->nChannels, renderFloat);
+                                ResampleInterleaved(dspFloat, numFrames, toWrite, 2, resampledDspFloat);
+                                AdaptChannels(resampledDspFloat, toWrite, 2, renderFormat->nChannels, renderFloat);
                                 if (!ConvertFromFloat(renderFloat, toWrite, renderFormat, renderData)) {
                                     conversionErrors += 1;
                                     memset(renderData, 0, toWrite * renderFormat->nBlockAlign);
@@ -1054,7 +1056,7 @@ int main(int argc, char* argv[]) {
         }
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             std::cout << "JamesDSP for Windows\n" << std::endl;
-            std::cout << "Usage: JamesDSP-Console.exe [options]\n" << std::endl;
+            std::cout << "Usage: JamesDSPConsole.exe [options]\n" << std::endl;
             std::cout << "Options:" << std::endl;
             std::cout << "  -i, --input <idx>    Capture/source render endpoint index" << std::endl;
             std::cout << "  -o, --output <idx>   Processed output device index" << std::endl;

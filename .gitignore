@@ -1,10 +1,11 @@
-# Axiom Windows harness build output
+# JamesDSP Controller Windows build output
 build-axiom-console/
 AxiomConsoleHarness/**/bin/
 AxiomConsoleHarness/**/obj/
 AxiomConsoleHarness/dist/
 
-# Axiom Windows harness local runtime state
+# JamesDSP Controller local runtime state
+AxiomConsoleHarness/jamesdsp-controller.ini
 AxiomConsoleHarness/axiom-liveprog-test.ini
 AxiomConsoleHarness/controller-state.json
 AxiomConsoleHarness/profiles/

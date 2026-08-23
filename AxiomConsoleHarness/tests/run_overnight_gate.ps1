@@ -1,13 +1,24 @@
 param(
     [double]$DurationMinutes = 480,
     [int]$ConfigReloadCount = 24,
-    [string]$ApplicationRoot = "$env:ProgramFiles\Axiom JamesDSP Controller",
+    [string]$ApplicationRoot = "",
     [string]$StateSeedPath = "",
     [int]$PreflightObservationSeconds = 120
 )
 
 $ErrorActionPreference = "Stop"
 $tests = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($ApplicationRoot)) {
+    $newRoot = Join-Path $env:ProgramFiles "JamesDSP Controller"
+    $legacyRoot = Join-Path $env:ProgramFiles "Axiom JamesDSP Controller"
+    $ApplicationRoot = if (Test-Path (Join-Path $newRoot "JamesDSPController.exe")) {
+        $newRoot
+    } elseif (Test-Path (Join-Path $legacyRoot "JamesDSPController.exe")) {
+        $legacyRoot
+    } else {
+        $newRoot
+    }
+}
 
 function Get-AcSleepSeconds {
     $output = powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE

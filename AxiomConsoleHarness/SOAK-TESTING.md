@@ -1,14 +1,14 @@
-# Axiom Windows Soak Testing
+# JamesDSP Controller Windows Soak Testing
 
 The soak harness validates the native Windows controller and processor without
 using private music. It creates a quiet deterministic 220 Hz probe, routes it
-through the selected VB-CABLE source, exercises LiveProg parameter reloads and
+through the selected VB-CABLE source, exercises configuration hot reloads and
 bounded crash recovery, then restores the preceding Windows default endpoint.
 
 All test state and evidence remains local under:
 
 ```text
-%LOCALAPPDATA%\Axiom\SoakTests\<timestamp>\
+%LOCALAPPDATA%\JamesDSP\SoakTests\<timestamp>\
 ```
 
 The harness uses an isolated controller data root. It does not overwrite the
@@ -43,7 +43,7 @@ Run against the installed application:
 
 ```powershell
 tests\run_soak_test.ps1 `
-  -ApplicationRoot "$env:ProgramFiles\Axiom JamesDSP Controller" `
+  -ApplicationRoot "$env:ProgramFiles\JamesDSP Controller" `
   -DurationMinutes 60 `
   -CrashCount 0 `
   -ConfigReloadCount 12 `
@@ -54,7 +54,7 @@ Keep crash recovery as a separate focused gate:
 
 ```powershell
 tests\run_soak_test.ps1 `
-  -ApplicationRoot "$env:ProgramFiles\Axiom JamesDSP Controller" `
+  -ApplicationRoot "$env:ProgramFiles\JamesDSP Controller" `
   -DurationMinutes 12 `
   -CrashCount 3 `
   -ConfigReloadCount 3 `
@@ -80,7 +80,7 @@ Use the installed application for the release-candidate soak:
 
 ```powershell
 tests\run_soak_test.ps1 `
-  -ApplicationRoot "$env:ProgramFiles\Axiom JamesDSP Controller" `
+  -ApplicationRoot "$env:ProgramFiles\JamesDSP Controller" `
   -DurationMinutes 480 `
   -CrashCount 0 `
   -ConfigReloadCount 24 `
@@ -94,7 +94,7 @@ gate, and restores the prior AC sleep timeout in all exit paths.
 
 The overnight wrapper runs release preflight with strict quiet-host checking.
 The preflight blocks clear setup failures such as pending reboot state,
-competing Axiom processors, route loss, package hash mismatch, or active
+competing JamesDSP Controller processors, route loss, package hash mismatch, or active
 system churn during the observation window. Non-strict preflight reports the
 same Hyper-V, HP recovery, Bluetooth, Windows Error Reporting, display,
 Windows Update, and power events as warnings so the operator can choose a
@@ -109,7 +109,7 @@ A run passes only when:
 - persistent health telemetry contains multiple samples;
 - frames and packets are processed;
 - every planned processor crash recovers;
-- every Axiom LiveProg parameter reload preserves the processor PID;
+- every configuration hot reload preserves the processor PID;
 - dropped frames, conversion errors, render errors, and render starvations
   remain zero;
 - capture discontinuities do not produce dropped frames or render starvation;
@@ -140,8 +140,8 @@ For post-run health analysis, run:
 
 ```powershell
 tests\analyze_soak_health.ps1 `
-  -RunRoot "$env:LOCALAPPDATA\Axiom\SoakTests\<timestamp>" `
-  > "$env:LOCALAPPDATA\Axiom\SoakTests\<timestamp>\health-analysis.json"
+  -RunRoot "$env:LOCALAPPDATA\JamesDSP\SoakTests\<timestamp>" `
+  > "$env:LOCALAPPDATA\JamesDSP\SoakTests\<timestamp>\health-analysis.json"
 ```
 
 The analyzer summarizes drop, discontinuity, deadline-miss, and reload timing
@@ -152,7 +152,7 @@ without replaying the soak or touching the audio route.
 Physical endpoint loss cannot be simulated safely by the unattended harness.
 After the one-hour automated gate:
 
-1. Start normal playback through Axiom.
+1. Start normal playback through JamesDSP Controller.
 2. Disconnect the selected USB or wired output.
 3. Confirm that the processor stops and the controller reports route recovery
    waiting.
@@ -161,6 +161,6 @@ After the one-hour automated gate:
 6. Repeat once across Windows sleep and wake.
 7. Export Diagnostics and retain the local report with the soak evidence.
 
-The manual pass fails if unprocessed audio bypasses Axiom, the wrong physical
+The manual pass fails if unprocessed audio bypasses JamesDSP Controller, the wrong physical
 output is selected, processing does not resume, or health errors continue
 increasing after recovery.

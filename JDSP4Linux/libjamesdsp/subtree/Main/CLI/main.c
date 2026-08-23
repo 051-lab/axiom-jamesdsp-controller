@@ -226,7 +226,7 @@ int main()
 	/*text = openTextFile("hadamVerb.eel");
 	if (text)
 	{
-		LiveProgStringParser(jdsp, text);
+		LiveProgStringParser(jdsp, text, 0, 0);
 		free(text);
 	}
 	LiveProgEnable(jdsp);*/
@@ -362,7 +362,7 @@ int main()
 			text = openTextFile("stftCentreCut.eel");
 			if (text)
 			{
-				LiveProgStringParser(jdsp, text);
+				LiveProgStringParser(jdsp, text, 0, 0);
 				free(text);
 			}
 		}
@@ -371,7 +371,7 @@ int main()
 			text = openTextFile("fftConvolutionHRTF1.eel");
 			if (text)
 			{
-				LiveProgStringParser(jdsp, text);
+				LiveProgStringParser(jdsp, text, 0, 0);
 				free(text);
 			}
 		}
@@ -380,7 +380,7 @@ int main()
 			text = openTextFile("autopeakfilter.eel");
 			if (text)
 			{
-				LiveProgStringParser(jdsp, text);
+				LiveProgStringParser(jdsp, text, 0, 0);
 				free(text);
 			}
 		}
@@ -389,7 +389,7 @@ int main()
 			text = openTextFile("stftDenoise.eel");
 			if (text)
 			{
-				LiveProgStringParser(jdsp, text);
+				LiveProgStringParser(jdsp, text, 0, 0);
 				free(text);
 			}
 		}
@@ -398,7 +398,7 @@ int main()
 			text = openTextFile("fftConvolution2x4x2.eel");
 			if (text)
 			{
-				LiveProgStringParser(jdsp, text);
+				LiveProgStringParser(jdsp, text, 0, 0);
 				free(text);
 			}
 		}*/
